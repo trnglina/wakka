@@ -22,7 +22,7 @@ use swi_fli::*;
 pub extern "C" fn install_libnative() {
     unsafe {
         register("measure_text\0", 4, text::measure_text as *mut c_void);
-        register("scene_put\0", 6, paint::scene_put as *mut c_void);
+        register("scene_put\0", 7, paint::scene_put as *mut c_void);
         register("scene_move\0", 3, paint::scene_move as *mut c_void);
         register("scene_drop\0", 1, paint::scene_drop as *mut c_void);
         register(

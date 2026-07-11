@@ -43,12 +43,30 @@ pub unsafe extern "C" fn scene_put(
     w: term_t,
     h: term_t,
     draw: term_t,
+    style: term_t,
 ) -> foreign_t {
     unsafe {
         let p = parse_path(path);
         let d = parse_draw(draw);
-        SCENE.with_borrow_mut(|s| s.put(p, px(x), px(y), px(w), px(h), d));
+        let (backdrop, opacity) = parse_style(style);
+        SCENE.with_borrow_mut(|s| s.put(p, px(x), px(y), px(w), px(h), d, backdrop, opacity));
         1
+    }
+}
+
+/// `style(Backdrop, Opacity)`: Backdrop is a color term or the atom `none`;
+/// Opacity is a number in 0..1 or `none` (fully opaque).
+unsafe fn parse_style(t: term_t) -> (Option<[u8; 4]>, f32) {
+    unsafe {
+        let at = atoms();
+        let backdrop_t = arg(1, t);
+        let backdrop = if term_text(backdrop_t).as_deref() == Some("none") {
+            None
+        } else {
+            Some(parse_color(backdrop_t, &at))
+        };
+        let opacity = term_number(arg(2, t)).unwrap_or(1.0).clamp(0.0, 1.0) as f32;
+        (backdrop, opacity)
     }
 }
 

@@ -419,9 +419,9 @@ test('an identical relayout reuses the whole tree') :-
     relayout_tree([], Root, L0, L1),
     same_term(L0, L1).
 
-test('a purely presentational attribute change reuses the whole tree') :-
+test('an untracked attribute change reuses the whole tree') :-
     build(div([], [div([main_size(10), cross_size(10)], [])]), Node0),
-    Changes = [set_attribute([0], opacity, [0.5])],
+    Changes = [set_attribute([0], decoration, [underline])],
     node_apply_changes(Changes, Node0, Node1),
     root(100, 100, Node0, Root0),
     layout_tree(Root0, L0),
@@ -795,8 +795,8 @@ test('glyphs flow into the stored layout node') :-
 test('an initial paint puts every node') :-
     lay(div([cross_axis(start)], [div([main_size(10), cross_size(10)], [])]), 100-100, L),
     layout_changes(none, L, Cs),
-    memberchk(paint_put([], _, _, _, _, _), Cs),
-    memberchk(paint_put([0], _, _, _, _, _), Cs),
+    memberchk(paint_put([], _, _, _, _, _, _), Cs),
+    memberchk(paint_put([0], _, _, _, _, _, _), Cs),
     \+ memberchk(paint_move(_, _, _), Cs),
     \+ memberchk(paint_drop(_), Cs).
 
@@ -820,10 +820,10 @@ test('a moved but otherwise unchanged child yields a paint_move') :-
     root(100, 100, Node1, Root1),
     relayout_tree(Changes, Root1, L0, L1),
     layout_changes(L0, L1, Cs),
-    memberchk(paint_put([0], _, _, _, _, _), Cs),
+    memberchk(paint_put([0], _, _, _, _, _, _), Cs),
     u(60, X60),
     memberchk(paint_move([1], X60, _), Cs),
-    \+ memberchk(paint_put([1], _, _, _, _, _), Cs).
+    \+ memberchk(paint_put([1], _, _, _, _, _, _), Cs).
 
 test('a removed child yields a paint_drop') :-
     build(div([cross_axis(start)],
@@ -852,9 +852,39 @@ test('a color change repaints only the recolored inline') :-
     root(100, 100, Node1, Root1),
     relayout_tree(Changes, Root1, L0, L1),
     layout_changes(L0, L1, Cs),
-    memberchk(paint_put([0, 0], _, _, _, _, glyphs(_)), Cs),
-    \+ ( member(paint_put(P, _, _, _, _, _), Cs), P \== [0, 0] ),
+    memberchk(paint_put([0, 0], _, _, _, _, glyphs(_), _), Cs),
+    \+ ( member(paint_put(P, _, _, _, _, _, _), Cs), P \== [0, 0] ),
     \+ memberchk(paint_move(_, _, _), Cs),
     \+ memberchk(paint_drop(_), Cs).
+
+test('a backdrop change restyles the node without relayout') :-
+    build(div([backdrop(blue)], [div([main_size(10), cross_size(10)], [])]), Node0),
+    root(100, 100, Node0, Root0),
+    layout_tree(Root0, L0),
+    get_dict(children, L0, [child(_, _, C0)]),
+    Changes = [set_attribute([], backdrop, [red])],
+    node_apply_changes(Changes, Node0, Node1),
+    root(100, 100, Node1, Root1),
+    relayout_tree(Changes, Root1, L0, L1),
+    get_dict(backdrop, L1, red),
+    get_dict(children, L1, [child(_, _, C1)]),
+    same_term(C0, C1),
+    layout_changes(L0, L1, Cs),
+    memberchk(paint_put([], _, _, _, _, _, style(red, none)), Cs),
+    \+ ( member(paint_put(P, _, _, _, _, _, _), Cs), P \== [] ),
+    \+ memberchk(paint_move(_, _, _), Cs).
+
+test('an opacity change restyles the node') :-
+    build(div([], [div([main_size(10), cross_size(10)], [])]), Node0),
+    root(100, 100, Node0, Root0),
+    layout_tree(Root0, L0),
+    \+ get_dict(opacity, L0, _),
+    Changes = [set_attribute([], opacity, [0.5])],
+    node_apply_changes(Changes, Node0, Node1),
+    root(100, 100, Node1, Root1),
+    relayout_tree(Changes, Root1, L0, L1),
+    get_dict(opacity, L1, 0.5),
+    layout_changes(L0, L1, Cs),
+    memberchk(paint_put([], _, _, _, _, _, style(none, 0.5)), Cs).
 
 :- end_tests(layout_changes).

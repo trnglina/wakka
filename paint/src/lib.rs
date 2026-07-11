@@ -9,8 +9,8 @@
 
 use std::collections::BTreeMap;
 
-use vello::kurbo::{Affine, Diagonal2};
-use vello::peniko::{Color, Fill};
+use vello::kurbo::{Affine, Diagonal2, Rect};
+use vello::peniko::{Color, Fill, Mix};
 use vello::{AaConfig, AaSupport, FontEmbolden, RenderParams, RendererOptions};
 
 /// The exact shareable font resource a glyph run was shaped against. Re-exported
@@ -63,10 +63,13 @@ struct Node {
     /// Offset relative to the parent node, in pixels.
     x: f32,
     y: f32,
-    #[allow(dead_code)]
+    /// Box size in pixels (used for the backdrop fill and the opacity clip).
     w: f32,
-    #[allow(dead_code)]
     h: f32,
+    /// Solid background fill painted behind the node's content, if any.
+    backdrop: Option<[u8; 4]>,
+    /// Alpha applied to the node and its subtree (1.0 = fully opaque).
+    opacity: f32,
     draw: Draw,
 }
 
@@ -84,8 +87,30 @@ impl Scene {
     }
 
     /// Creates or replaces the node at `path`.
-    pub fn put(&mut self, path: Path, x: f32, y: f32, w: f32, h: f32, draw: Draw) {
-        self.nodes.insert(path, Node { x, y, w, h, draw });
+    #[allow(clippy::too_many_arguments)]
+    pub fn put(
+        &mut self,
+        path: Path,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        draw: Draw,
+        backdrop: Option<[u8; 4]>,
+        opacity: f32,
+    ) {
+        self.nodes.insert(
+            path,
+            Node {
+                x,
+                y,
+                w,
+                h,
+                backdrop,
+                opacity,
+                draw,
+            },
+        );
     }
 
     /// Updates only the transform of an existing node.
@@ -155,11 +180,40 @@ impl Renderer {
         base_color: [u8; 4],
     ) -> Result<(), vello::Error> {
         let mut vs = vello::Scene::new();
+        // Opacity nodes push an alpha layer over their whole subtree. Iteration
+        // is path-ordered, so a subtree is contiguous and starts_with tells us
+        // when we have left it and should pop.
+        let mut open_layers: Vec<Path> = Vec::new();
         for (path, node) in &scene.nodes {
+            while let Some(top) = open_layers.last() {
+                if path.starts_with(top.as_slice()) {
+                    break;
+                }
+                vs.pop_layer();
+                open_layers.pop();
+            }
+
+            let (ax, ay) = scene.absolute(path);
+            let rect = Rect::new(
+                ax as f64,
+                ay as f64,
+                (ax + node.w) as f64,
+                (ay + node.h) as f64,
+            );
+
+            if node.opacity < 1.0 {
+                vs.push_layer(Fill::NonZero, Mix::Normal, node.opacity, Affine::IDENTITY, &rect);
+                open_layers.push(path.clone());
+            }
+
+            if let Some(bg) = node.backdrop {
+                let color = Color::from_rgba8(bg[0], bg[1], bg[2], bg[3]);
+                vs.fill(Fill::NonZero, Affine::IDENTITY, color, None, &rect);
+            }
+
             let Draw::Glyphs(runs) = &node.draw else {
                 continue;
             };
-            let (ax, ay) = scene.absolute(path);
             let transform = Affine::translate((ax as f64, ay as f64));
             for run in runs {
                 let color =
@@ -189,6 +243,9 @@ impl Renderer {
                     }),
                 );
             }
+        }
+        while open_layers.pop().is_some() {
+            vs.pop_layer();
         }
 
         self.vello.render_to_texture(

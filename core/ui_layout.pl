@@ -125,7 +125,9 @@ recolor_node_(Dirty, Node, Prev, Layout) :-
     ;  get_dict(children, Prev, PrevChildren)
     -> get_dict(children, Node, NodeChildren),
        recolor_child_list_(Dirty, NodeChildren, 0, PrevChildren, NewChildren),
-       put_dict(children, Prev, NewChildren, Layout)
+       put_dict(children, Prev, NewChildren, L1),
+       get_dict(attributes, Node, Attrs),
+       apply_paint_style_(Attrs, L1, Layout)
     ;  Layout = Prev
     ).
 
@@ -154,9 +156,10 @@ recolor_inline_(Node, Prev, Layout) :-
     get_dict(glyphs, Prev, Lines0),
     recolor_lines_(Lines0, Ranges, Lines),
     (  Lines == Lines0
-    -> Layout = Prev
-    ;  put_dict(glyphs, Prev, Lines, Layout)
-    ).
+    -> L1 = Prev
+    ;  put_dict(glyphs, Prev, Lines, L1)
+    ),
+    inline_paint_style_(Node, L1, Layout).
 
 %! run_color_ranges_(+Runs, +Offset, -Ranges) is det.
 %
@@ -205,6 +208,42 @@ run_glyphs_color_([glyph(_, _, _, _, Start, _)|_], Ranges, Color) :- !,
     ).
 run_glyphs_color_(_, _, none).
 
+%! apply_paint_style_(+Attrs, +Layout0, -Layout) is det.
+%
+%  Sets the layout node's presentational keys (backdrop, opacity) to match the
+%  node's attributes — present in the layout iff present as an attribute — so a
+%  paint-only change is reflected by re-applying this without re-measuring.
+%  put_dict/del_dict preserve term identity when nothing changes, so an unchanged
+%  node stays same_term and emits no paint change.
+
+apply_paint_style_(Attrs, Layout0, Layout) :-
+    (  get_dict(backdrop, Attrs, [BG])
+    -> put_dict(backdrop, Layout0, BG, L1)
+    ;  del_key_(backdrop, Layout0, L1)
+    ),
+    (  get_dict(opacity, Attrs, [OP]),
+       number(OP)
+    -> put_dict(opacity, L1, OP, Layout)
+    ;  del_key_(opacity, L1, Layout)
+    ).
+
+%! inline_paint_style_(+Node, +Layout0, -Layout) is det.
+%
+%  As apply_paint_style_, for an inline node; text nodes have no attributes and
+%  so carry no presentational style.
+
+inline_paint_style_(Node, Layout0, Layout) :-
+    (  get_dict(attributes, Node, Attrs)
+    -> apply_paint_style_(Attrs, Layout0, Layout)
+    ;  Layout = Layout0
+    ).
+
+del_key_(Key, Dict0, Dict) :-
+    (  del_dict(Key, Dict0, _, Dict1)
+    -> Dict = Dict1
+    ;  Dict = Dict0
+    ).
+
 %! block_layout(+Dirty, +Path, +Node, +Constraints, +Prev, -Layout) is det.
 
 block_layout(Dirty, Path, Node, Constraints, Prev, Layout) :-
@@ -250,9 +289,10 @@ block_layout(Dirty, Path, Node, Constraints, Prev, Layout) :-
                      constraints: Constraints, path: Path},
     Overflow is SumExtents - ContentMain,
     (  Overflow > 0
-    -> put_dict(overflow, Layout0, Overflow, Layout)
-    ;  Layout = Layout0
-    ).
+    -> put_dict(overflow, Layout0, Overflow, Layout1)
+    ;  Layout1 = Layout0
+    ),
+    apply_paint_style_(Attrs, Layout1, Layout).
 
 %! main_extent_(+MaxMain, +PadMain, +Path, -MainRoom) is det.
 
@@ -500,8 +540,9 @@ inline_layout(Dirty, Path, Node, Options, Constraints, Prev, Layout) :-
        Hc is ceiling(H0),
        clamp_(Wc, MinW, MaxW, W),
        clamp_(Hc, MinH, MaxH, H),
-       Layout = layout{width: W, height: H, glyphs: Glyphs, constraints: Constraints,
-                       options: Options, path: Path}
+       Layout0 = layout{width: W, height: H, glyphs: Glyphs, constraints: Constraints,
+                        options: Options, path: Path},
+       inline_paint_style_(Node, Layout0, Layout)
     ).
 
 %! inline_node_runs_(+Node, +RevPath, -Runs, ?Tail) is det.
@@ -618,10 +659,11 @@ axis_(column, W, H, H, W).
 %  path; a node's position lives in its parent's child(X, Y, Layout) entry, so
 %  moves are detected at the parent and content changes by recursion.
 %
-%    Change ::= paint_put(Path, X, Y, W, H, Draw)   % (re)create: transform + size + content
+%    Change ::= paint_put(Path, X, Y, W, H, Draw, Style)  % (re)create: transform, size, content, style
 %             | paint_move(Path, X, Y)              % position-only (subtree unchanged)
 %             | paint_drop(Path)                     % remove node + subtree
 %    Draw   ::= glyphs(Lines) | none
+%    Style  ::= style(Backdrop, Opacity)            % Backdrop = color | none; Opacity = 0..1 | none
 %
 %  The initial paint is layout_changes(none, Layout, Changes).
 
@@ -654,12 +696,12 @@ node_changes_(PX, PY, Prev, NX, NY, Next) -->
 %  difference confined to its children is handled by recursion.
 
 node_put_(PX, PY, Prev, NX, NY, Next) -->
-    { node_paint_(Prev, PW, PH, PDraw),
-      node_paint_(Next, NW, NH, NDraw) },
-    (  { PX == NX, PY == NY, PW == NW, PH == NH, PDraw == NDraw }
+    { node_paint_(Prev, PW, PH, PDraw, PStyle),
+      node_paint_(Next, NW, NH, NDraw, NStyle) },
+    (  { PX == NX, PY == NY, PW == NW, PH == NH, PDraw == NDraw, PStyle == NStyle }
     -> []
     ;  { get_dict(path, Next, Path) },
-       [ paint_put(Path, NX, NY, NW, NH, NDraw) ]
+       [ paint_put(Path, NX, NY, NW, NH, NDraw, NStyle) ]
     ).
 
 %! put_subtree_(+X, +Y, +Layout)// is det.
@@ -667,9 +709,9 @@ node_put_(PX, PY, Prev, NX, NY, Next) -->
 %  Emits paint_put for a wholly new node and, recursively, its children.
 
 put_subtree_(X, Y, Layout) -->
-    { node_paint_(Layout, W, H, Draw),
+    { node_paint_(Layout, W, H, Draw, Style),
       get_dict(path, Layout, Path) },
-    [ paint_put(Path, X, Y, W, H, Draw) ],
+    [ paint_put(Path, X, Y, W, H, Draw, Style) ],
     put_children_(Layout).
 
 put_children_(Layout) -->
@@ -682,15 +724,20 @@ put_child_list_([child(X, Y, L)|Cs]) -->
     put_subtree_(X, Y, L),
     put_child_list_(Cs).
 
-%! node_paint_(+Layout, -W, -H, -Draw) is det.
+%! node_paint_(+Layout, -W, -H, -Draw, -Style) is det.
+%
+%  Style = style(Backdrop, Opacity): Backdrop is a color term or `none`; Opacity
+%  is a number in 0..1 or `none` (fully opaque).
 
-node_paint_(Layout, W, H, Draw) :-
+node_paint_(Layout, W, H, Draw, style(Backdrop, Opacity)) :-
     get_dict(width, Layout, W),
     get_dict(height, Layout, H),
     (  get_dict(glyphs, Layout, Glyphs)
     -> Draw = glyphs(Glyphs)
     ;  Draw = none
-    ).
+    ),
+    (  get_dict(backdrop, Layout, Backdrop) -> true ; Backdrop = none ),
+    (  get_dict(opacity, Layout, Opacity) -> true ; Opacity = none ).
 
 %! children_changes_(+Prev, +Next)// is det.
 

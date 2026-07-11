@@ -1,5 +1,5 @@
 :- module(ui_native, [ measure_text/4,
-                       scene_put/6, scene_move/3, scene_drop/1, scene_render_headless/3 ]).
+                       scene_put/7, scene_move/3, scene_drop/1, scene_render_headless/3 ]).
 
 %  The single loader for the `native` shared library — the one FLI boundary for
 %  the core. `native` consumes the pure worker crates (layout_text, and later
@@ -27,12 +27,15 @@
 %      inspection only). Throws type_error(max_width, MaxW) when MaxW is neither a
 %      number nor `inf`.
 %
-%    scene_put(+Path, +X, +Y, +W, +H, +Draw)
+%    scene_put(+Path, +X, +Y, +W, +H, +Draw, +Style)
 %    scene_move(+Path, +X, +Y)
 %    scene_drop(+Path)
 %      Mutate the retained native render scene, keyed by state Path. Geometry is
 %      in layout units; Draw is `glyphs(Lines)` (as returned by measure_text) or
-%      the atom `none`.
+%      the atom `none`. Style is `style(Backdrop, Opacity)` where Backdrop is a
+%      color term (as `color`) or `none`, and Opacity is a number in 0..1 or
+%      `none` (fully opaque); it fills the node box behind its content and fades
+%      the node and its subtree.
 %
 %    scene_render_headless(+Width, +Height, -Pixels)
 %      Render the current scene to an offscreen Width x Height (pixel) texture

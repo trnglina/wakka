@@ -38,8 +38,8 @@ attribute(padding, 4, [layout]).
 
 % Presentational attributes
 attribute(decoration, 1, []).
-attribute(backdrop, 1, []).
-attribute(opacity, 1, []).
+attribute(backdrop, 1, [paint]).
+attribute(opacity, 1, [paint]).
 
 % --- Attributes API --- %
 

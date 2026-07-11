@@ -15,8 +15,8 @@
 paint_apply(Changes) :-
     maplist(paint_change_, Changes).
 
-paint_change_(paint_put(Path, X, Y, W, H, Draw)) :-
-    scene_put(Path, X, Y, W, H, Draw).
+paint_change_(paint_put(Path, X, Y, W, H, Draw, Style)) :-
+    scene_put(Path, X, Y, W, H, Draw, Style).
 paint_change_(paint_move(Path, X, Y)) :-
     scene_move(Path, X, Y).
 paint_change_(paint_drop(Path)) :-
