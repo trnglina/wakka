@@ -352,17 +352,19 @@ cross_offset_(end, Room, Extent, CrossLead, Offset) :-
 %  Lays out one inline node (a text node or a display(inline) element at
 %  Path) by measuring its content through ui_layout_text:
 %
-%    measure_text(Runs, Options, MaxW, metrics(W, H))
+%    measure_text(Runs, Options, MaxW, metrics(W, H, Glyphs))
 %    Runs    ::= [ run(Text, InheritedAttrs)  % text node
 %                | box(RelPath, W, H)         % explicitly sized inline element,
 %                | ... ]                      %   RelPath relative to Path
 %    Options  = inline_options{leading: _}
 %    MaxW     = units | inf
 %
-%  The runs and the returned metrics speak layout units. Metrics are ceiled
-%  to whole units (so measured content never overflows its box) and clamped
-%  into Constraints, so a tight main axis (a tight flex share) forces the
-%  inline's box regardless of its content.
+%  The runs and the returned metrics speak layout units. W/H are ceiled to
+%  whole units (so measured content never overflows its box) and clamped into
+%  Constraints, so a tight main axis (a tight flex share) forces the inline's
+%  box regardless of its content. Glyphs is the per-glyph layout (lines, glyph
+%  runs, positioned glyphs; see ui_layout_text), stored verbatim under the
+%  layout's glyphs key for a later paint pass.
 
 inline_layout(Dirty, Path, Node, Options, Constraints, Prev, Layout) :-
     (  is_dict(Prev),
@@ -374,12 +376,12 @@ inline_layout(Dirty, Path, Node, Options, Constraints, Prev, Layout) :-
     -> Layout = Prev
     ;  Constraints = constraints(MinW, MaxW, MinH, MaxH),
        inline_node_runs_(Node, [], Runs, []),
-       measure_text(Runs, Options, MaxW, metrics(W0, H0)),
+       measure_text(Runs, Options, MaxW, metrics(W0, H0, Glyphs)),
        Wc is ceiling(W0),
        Hc is ceiling(H0),
        clamp_(Wc, MinW, MaxW, W),
        clamp_(Hc, MinH, MaxH, H),
-       Layout = layout{width: W, height: H, constraints: Constraints,
+       Layout = layout{width: W, height: H, glyphs: Glyphs, constraints: Constraints,
                        options: Options, path: Path}
     ).
 

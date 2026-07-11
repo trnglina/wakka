@@ -37,7 +37,12 @@ u(Px, Units) :-
 %  or the atom inf; W and H come back in layout units.
 
 measure(Runs, MaxW, W, H) :-
-    measure_text(Runs, inline_options{leading: none}, MaxW, metrics(W, H)).
+    measure_text(Runs, inline_options{leading: none}, MaxW, metrics(W, H, _)).
+
+%  Drives the native measurer and returns the per-glyph Lines payload.
+
+measure_lines(Runs, MaxW, Lines) :-
+    measure_text(Runs, inline_options{leading: none}, MaxW, metrics(_, _, Lines)).
 
 node_runs(El, Idx, Runs) :-
     build(El, Node),
@@ -606,8 +611,8 @@ test('a box widens the box beyond adjacent text alone') :-
 
 test('a large absolute leading grows the line box') :-
     Runs = [run("leading", attrs{font_size: [16]})],
-    measure_text(Runs, inline_options{leading: none}, inf, metrics(_, H0)),
-    measure_text(Runs, inline_options{leading: 2}, inf, metrics(_, H1)),
+    measure_text(Runs, inline_options{leading: none}, inf, metrics(_, H0, _)),
+    measure_text(Runs, inline_options{leading: 2}, inf, metrics(_, H1, _)),
     H1 > H0.
 
 :- end_tests(text_options).
@@ -673,3 +678,61 @@ test('an explicitly sized inline element is measured to its box') :-
     get_dict(height, P, H), H >= Five.
 
 :- end_tests(text_integration).
+
+:- begin_tests(glyph_layout).
+
+first_glyph_run(Lines, GlyphRun) :-
+    member(line(_, _, _, Items), Lines),
+    member(GlyphRun, Items),
+    GlyphRun = glyph_run(_, _, _, _, _),
+    !.
+
+test('text produces glyph runs with a font descriptor and positioned glyphs') :-
+    measure_lines([run("hello", attrs{font_size: [16]})], inf, Lines),
+    Lines = [line(Baseline, Ascent, Descent, _)|_],
+    maplist(number, [Baseline, Ascent, Descent]),
+    first_glyph_run(Lines,
+        glyph_run(font(Family, Weight, Style), Size, _, synth(Bold, _), Glyphs)),
+    string(Family), string_length(Family, FN), FN > 0,
+    number(Weight), number(Size),
+    once((Style == normal ; Style == italic ; Style = oblique(_))),
+    memberchk(Bold, [true, false]),
+    Glyphs = [_|_],
+    forall(member(glyph(Id, X, Y, Adv, S, E), Glyphs),
+           ( maplist(number, [Id, X, Y, Adv]), integer(S), integer(E), S =< E )).
+
+test('a run color is carried through to its glyph run') :-
+    measure_lines([run("x", attrs{font_size: [16], color: [red]})], inf, Lines),
+    first_glyph_run(Lines, glyph_run(_, _, Color, _, _)),
+    Color == red.
+
+test('a run without color yields none') :-
+    measure_lines([run("x", attrs{font_size: [16]})], inf, Lines),
+    first_glyph_run(Lines, glyph_run(_, _, Color, _, _)),
+    Color == none.
+
+test('glyph clusters cover the source text') :-
+    measure_lines([run("hi", attrs{font_size: [16]})], inf, Lines),
+    first_glyph_run(Lines, glyph_run(_, _, _, _, Glyphs)),
+    findall(S, member(glyph(_, _, _, _, S, _), Glyphs), Starts),
+    findall(E, member(glyph(_, _, _, _, _, E), Glyphs), Ends),
+    min_list(Starts, 0),
+    max_list(Ends, 2).
+
+test('an inline box appears as a positioned box item') :-
+    u(20, B),
+    measure_lines([run("a", attrs{font_size: [16]}), box([], B, B)], inf, Lines),
+    member(line(_, _, _, Items), Lines),
+    member(box(_, X, Y, W, H), Items),
+    maplist(number, [X, Y, W, H]),
+    W >= B.
+
+test('glyphs flow into the stored layout node') :-
+    build(div([font_size(16)], ["hi"]), Node),
+    root(100, 100, Node, Root),
+    layout_tree(Root, L),
+    get_dict(children, L, [child(_, _, P)]),
+    get_dict(glyphs, P, Lines),
+    first_glyph_run(Lines, glyph_run(_, _, _, _, [_|_])).
+
+:- end_tests(glyph_layout).
