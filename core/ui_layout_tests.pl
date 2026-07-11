@@ -4,7 +4,16 @@
 :- use_module(library(plunit)).
 :- use_module(ui_changes).
 :- use_module(ui_layout).
+:- use_module(ui_layout_text).
 :- use_module(ui_state).
+
+%  ui_layout now measures inline content by calling ui_layout_text directly, so
+%  the whole suite drives the real Parley measurer across the foreign boundary
+%  and requires the native library: run `cargo build -p layout_text` first.
+%  Because metrics depend on the host's fonts, tests over text assert structural
+%  or relational properties rather than exact pixels; tests whose geometry is
+%  fixed by the engine (flex shares, stretch, axis_alignment of fixed-size boxes)
+%  still assert exact values.
 
 main :-
     run_tests.
@@ -17,26 +26,24 @@ root(W, H, Node, root{viewport_width: W, viewport_height: H, node: Node}).
 lay(El, W-H, Layout) :-
     build(El, Node),
     root(W, H, Node, Root),
-    layout_tree(measure_none, Root, Layout).
+    layout_tree(Root, Layout).
 
 %  Layout geometry is in layout units; u/2 converts expected logical pixels.
 
 u(Px, Units) :-
     px_units(Px, Units).
 
-measure_fake(measure_inline(Runs, _, _), metrics(W, H)) :-
-    u(14, H),
-    runs_width(Runs, W).
+%  Drives the native measurer with default inline options. MaxW is a unit count
+%  or the atom inf; W and H come back in layout units.
 
-runs_width([], 0).
-runs_width([run(Text, _)|Runs], W) :- !,
-    string_length(Text, N),
-    runs_width(Runs, W0),
-    u(7, CharW),
-    W is W0 + N * CharW.
-runs_width([box(_, BoxW, _)|Runs], W) :-
-    runs_width(Runs, W0),
-    W is W0 + BoxW.
+measure(Runs, MaxW, W, H) :-
+    measure_text(Runs, inline_options{leading: none}, MaxW, metrics(W, H)).
+
+node_runs(El, Idx, Runs) :-
+    build(El, Node),
+    get_dict(children, Node, Children),
+    nth0(Idx, Children, Child),
+    ui_layout:inline_node_runs_(Child, [], Runs, []).
 
 :- begin_tests(root).
 
@@ -55,7 +62,7 @@ test('an explicit size on the root is inert') :-
 
 test('an empty tree has no layout') :-
     root(100, 50, none, Root),
-    layout_tree(measure_none, Root, L),
+    layout_tree(Root, L),
     L == none.
 
 :- end_tests(root).
@@ -167,40 +174,38 @@ test('a loose fit caps content at the share') :-
     get_dict(children, L, [child(0, _, B)]),
     u(50, W), get_dict(width, B, W).
 
-test('loose slack becomes free space for main_axis alignment') :-
+test('loose slack becomes free space for main_axis axis_alignment') :-
     lay(div([direction(row), main_axis(end)],
             [div([flex(1), fit(loose), main_size(20), cross_size(10)], [])]),
         100-50, L),
     u(80, X),
     get_dict(children, L, [child(X, _, _)]).
 
-test('a loose flex inline wraps at its share') :-
+test('a loose flex inline wraps within its share') :-
     build(div([direction(row)],
               [div([main_size(30), cross_size(10)], []),
                span([display(inline), flex(1), fit(loose)], ["hello world!!!"])]), Node),
     root(100, 100, Node, Root),
-    layout_tree(measure_fake, Root, L),
+    layout_tree(Root, L),
     u(30, X1),
     get_dict(children, L, [child(0, _, _), child(X1, _, T)]),
-    u(70, W), get_dict(width, T, W).
+    u(70, Share),
+    get_dict(width, T, W),
+    W > 0, W =< Share.
 
 test('a tight flex inline is forced to its share') :-
     build(div([direction(row)], [span([display(inline), flex(1)], ["hi"])]), Node),
     root(100, 50, Node, Root),
-    layout_tree(measure_fake, Root, L),
+    layout_tree(Root, L),
     get_dict(children, L, [child(0, _, T)]),
     u(100, W), get_dict(width, T, W).
 
-test('a pending tight flex inline still occupies its share') :-
-    lay(div([direction(row)], [span([display(inline), flex(1)], ["hi"])]), 100-50, L),
-    get_dict(children, L, [child(0, _, T)]),
-    u(100, W), get_dict(width, T, W),
-    get_dict(pending, T, measure_inline(_, _, W)).
-
-test('a rigid inline in a row is measured with unbounded width') :-
-    lay(div([direction(row)], ["hi"]), 100-50, L),
+test('a rigid inline in a row is measured unbounded, so long text overflows') :-
+    lay(div([direction(row)], ["the quick brown fox jumps over the lazy dog"]), 50-50, L),
     get_dict(children, L, [child(_, _, T)]),
-    get_dict(pending, T, measure_inline(_, _, inf)).
+    u(50, Viewport),
+    get_dict(width, T, W),
+    W > Viewport.
 
 :- end_tests(flex_fit).
 
@@ -217,7 +222,7 @@ test('a fitting container carries no overflow key') :-
 
 :- end_tests(overflow).
 
-:- begin_tests(alignment).
+:- begin_tests(axis_alignment).
 
 align_xs(Align, PxXs) :-
     lay(div([direction(row), main_axis(Align)],
@@ -283,18 +288,12 @@ test('cross_axis stretch forces children to fill the cross axis') :-
 test('cross_axis stretch forces a measured inline to fill the cross axis') :-
     build(div([direction(row), cross_axis(stretch)], ["hi"]), Node),
     root(100, 50, Node, Root),
-    layout_tree(measure_fake, Root, L),
+    layout_tree(Root, L),
     get_dict(children, L, [child(0, 0, T)]),
-    u(14, W), get_dict(width, T, W),
+    get_dict(width, T, W), W > 0,
     u(50, H), get_dict(height, T, H).
 
-test('cross_axis stretch forces a pending inline to fill the cross axis') :-
-    lay(div([direction(row), cross_axis(stretch)], ["hi"]), 100-50, L),
-    get_dict(children, L, [child(0, 0, T)]),
-    u(50, H), get_dict(height, T, H),
-    get_dict(pending, T, _).
-
-:- end_tests(alignment).
+:- end_tests(axis_alignment).
 
 :- begin_tests(margin_padding).
 
@@ -335,42 +334,41 @@ test('flex distribution accounts for margins') :-
 
 :- end_tests(margin_padding).
 
-:- begin_tests(text_stub).
+:- begin_tests(inline_text).
 
-test('text yields a pending measurement request') :-
-    lay(div([font_size(12), padding(10)], ["hello"]), 100-100, L),
-    get_dict(children, L, [child(_, _, P)]),
-    get_dict(width, P, 0),
-    get_dict(height, P, 0),
+test('a text node is measured to a positive box at its padded offset') :-
+    lay(div([font_size(12), padding(10), cross_axis(start)], ["hello"]), 100-100, L),
+    get_dict(children, L, [child(X, Y, P)]),
+    u(10, Pad), X == Pad, Y == Pad,
     get_dict(path, P, [0]),
-    get_dict(pending, P, measure_inline(Runs, Options, MaxW)),
-    Runs == [run("hello", attrs{font_size: [12]})],
-    Options == inline_options{alignment: start, leading: none},
-    u(80, MaxW).
+    \+ get_dict(pending, P, _),
+    get_dict(width, P, W), W > 0,
+    get_dict(height, P, H), H > 0.
 
-test('inline options come from the owning block element') :-
-    lay(div([alignment(justify), leading(4)], ["hi"]), 100-100, L),
-    get_dict(children, L, [child(_, _, P)]),
-    get_dict(pending, P, measure_inline(_, inline_options{alignment: justify, leading: 4}, _)).
+test('inline leading from the owning block grows the text box') :-
+    lay(div([font_size(16)], ["hi"]), 100-100, L0),
+    get_dict(children, L0, [child(_, _, P0)]),
+    get_dict(height, P0, H0),
+    lay(div([font_size(16), leading(64)], ["hi"]), 100-100, L1),
+    get_dict(children, L1, [child(_, _, P1)]),
+    get_dict(height, P1, H1),
+    H1 > H0.
 
 test('measured text flows into shrink-wrap sizing') :-
     build(div([cross_axis(start)], [div([], ["hi"])]), Node),
     root(200, 200, Node, Root),
-    layout_tree(measure_fake, Root, L),
+    layout_tree(Root, L),
     get_dict(children, L, [child(0, 0, Inner)]),
-    u(14, S),
-    get_dict(width, Inner, S),
-    get_dict(height, Inner, S),
     get_dict(children, Inner, [child(0, 0, P)]),
-    get_dict(width, P, S),
-    get_dict(height, P, S),
-    \+ get_dict(pending, P, _).
+    \+ get_dict(pending, P, _),
+    get_dict(width, Inner, IW), get_dict(width, P, IW), IW > 0,
+    get_dict(height, Inner, IH), get_dict(height, P, IH), IH > 0.
 
-:- end_tests(text_stub).
+:- end_tests(inline_text).
 
 :- begin_tests(inline_runs).
 
-test('each inline child is its own flow item') :-
+test('each inline child is its own measured flow item') :-
     lay(div([], ["a",
                  span([display(inline)], ["b"]),
                  img([display(inline), main_size(5), cross_size(5)], []),
@@ -380,30 +378,28 @@ test('each inline child is its own flow item') :-
     get_dict(children, L, [child(_, _, P1), child(_, _, P2), child(_, _, P3),
                            child(_, _, Block), child(_, _, P4)]),
     get_dict(path, P1, [0]),
-    get_dict(pending, P1, measure_inline([run("a", _)], _, _)),
     get_dict(path, P2, [1]),
-    get_dict(pending, P2, measure_inline([run("b", _)], _, _)),
     get_dict(path, P3, [2]),
-    u(5, B5),
-    get_dict(pending, P3, measure_inline([box([], B5, B5)], _, _)),
     u(10, WBlock), get_dict(width, Block, WBlock),
     get_dict(path, P4, [4]),
-    get_dict(pending, P4, measure_inline([run("c", _)], _, _)).
+    forall(member(P, [P1, P2, P3, P4]), \+ get_dict(pending, P, _)).
 
-test('an inline element flattens its descendants into one measurement') :-
-    lay(div([], [span([display(inline)],
-                      ["a", span([display(inline)], ["b"])])]),
-        100-100, L),
-    get_dict(children, L, [child(_, _, P)]),
-    get_dict(path, P, [0]),
-    get_dict(pending, P, measure_inline(Runs, _, _)),
+test('a text node flattens to a single run carrying its inherited attributes') :-
+    node_runs(div([font_size(12)], ["hello"]), 0, Runs),
+    Runs == [run("hello", attrs{font_size: [12]})].
+
+test('an inline element flattens its descendants into one run list') :-
+    node_runs(div([], [span([display(inline)], ["a", span([display(inline)], ["b"])])]),
+              0, Runs),
     Runs = [run("a", _), run("b", _)].
 
+test('an explicitly sized inline element flattens to a box') :-
+    node_runs(div([], [img([display(inline), main_size(5), cross_size(5)], [])]), 0, Runs),
+    u(5, Five),
+    Runs = [box([], Five, Five)].
+
 test('a block nested in inline content becomes a zero-sized box') :-
-    lay(div([], [span([display(inline)], ["x", div([], [])])]), 100-100, L),
-    get_dict(children, L, [child(_, _, P)]),
-    get_dict(path, P, [0]),
-    get_dict(pending, P, measure_inline(Runs, _, _)),
+    node_runs(div([], [span([display(inline)], ["x", div([], [])])]), 0, Runs),
     Runs = [run("x", _), box([1], 0, 0)].
 
 :- end_tests(inline_runs).
@@ -413,8 +409,8 @@ test('a block nested in inline content becomes a zero-sized box') :-
 test('an identical relayout reuses the whole tree') :-
     build(div([], [div([main_size(10), cross_size(10)], [])]), Node),
     root(100, 100, Node, Root),
-    layout_tree(measure_none, Root, L0),
-    relayout_tree(measure_none, [], Root, L0, L1),
+    layout_tree(Root, L0),
+    relayout_tree([], Root, L0, L1),
     same_term(L0, L1).
 
 test('a non-layout attribute change reuses the whole tree') :-
@@ -422,17 +418,17 @@ test('a non-layout attribute change reuses the whole tree') :-
     Changes = [set_attribute([0], color, [red])],
     node_apply_changes(Changes, Node0, Node1),
     root(100, 100, Node0, Root0),
-    layout_tree(measure_none, Root0, L0),
+    layout_tree(Root0, L0),
     root(100, 100, Node1, Root1),
-    relayout_tree(measure_none, Changes, Root1, L0, L1),
+    relayout_tree(Changes, Root1, L0, L1),
     same_term(L0, L1).
 
 test('a viewport change reuses unaffected children') :-
     build(div([], [div([main_size(10), cross_size(10)], [])]), Node),
     root(100, 100, Node, Root0),
-    layout_tree(measure_none, Root0, L0),
+    layout_tree(Root0, L0),
     root(100, 200, Node, Root1),
-    relayout_tree(measure_none, [], Root1, L0, L1),
+    relayout_tree([], Root1, L0, L1),
     \+ same_term(L0, L1),
     u(200, H), get_dict(height, L1, H),
     get_dict(children, L0, [child(_, _, C0)]),
@@ -444,11 +440,11 @@ test('a size change recomputes only the affected child') :-
               [div([main_size(40), cross_size(10)], []), div([main_size(30), cross_size(10)], [])]),
           Node0),
     root(100, 100, Node0, Root0),
-    layout_tree(measure_none, Root0, L0),
+    layout_tree(Root0, L0),
     Changes = [set_attribute([0], main_size, [60])],
     node_apply_changes(Changes, Node0, Node1),
     root(100, 100, Node1, Root1),
-    relayout_tree(measure_none, Changes, Root1, L0, L1),
+    relayout_tree(Changes, Root1, L0, L1),
     u(40, X40), u(60, X60),
     get_dict(children, L0, [child(0, 0, A0), child(X40, 0, B0)]),
     get_dict(children, L1, [child(0, 0, A1), child(X60, 0, B1)]),
@@ -456,25 +452,29 @@ test('a size change recomputes only the affected child') :-
     get_dict(width, A1, X60),
     same_term(B0, B1).
 
-test('an inherited layout attribute change re-requests text measurement') :-
+test('an inherited layout attribute change re-measures the text') :-
     build(div([font_size(12)], ["hi"]), Node0),
     root(100, 100, Node0, Root0),
-    layout_tree(measure_none, Root0, L0),
+    layout_tree(Root0, L0),
+    get_dict(children, L0, [child(_, _, P0)]),
+    get_dict(height, P0, H0),
     Changes = [set_attribute([], font_size, [20])],
     node_apply_changes(Changes, Node0, Node1),
     root(100, 100, Node1, Root1),
-    relayout_tree(measure_none, Changes, Root1, L0, L1),
-    get_dict(children, L1, [child(_, _, P)]),
-    get_dict(pending, P, measure_inline([run("hi", attrs{font_size: [20]})], _, _)).
+    relayout_tree(Changes, Root1, L0, L1),
+    get_dict(children, L1, [child(_, _, P1)]),
+    \+ same_term(P0, P1),
+    get_dict(height, P1, H1),
+    H1 > H0.
 
 test('an inserted child recomputes the container positions') :-
     build(div([cross_axis(start)], [div([main_size(10), cross_size(10)], [])]), Node0),
     root(100, 100, Node0, Root0),
-    layout_tree(measure_none, Root0, L0),
+    layout_tree(Root0, L0),
     Changes = [insert_child([0], div([main_size(20), cross_size(10)], []))],
     node_apply_changes(Changes, Node0, Node1),
     root(100, 100, Node1, Root1),
-    relayout_tree(measure_none, Changes, Root1, L0, L1),
+    relayout_tree(Changes, Root1, L0, L1),
     u(20, Y1),
     get_dict(children, L1, [child(0, 0, New), child(0, Y1, _)]),
     get_dict(height, New, Y1).
@@ -492,12 +492,184 @@ test('incremental relayout equals a fresh layout') :-
                 div([key(a), main_size(50), cross_size(10)], [])]),
     build(Prev, Node0),
     root(200, 100, Node0, Root0),
-    layout_tree(measure_none, Root0, L0),
+    layout_tree(Root0, L0),
     element_changes(Prev, Next, Changes),
     node_apply_changes(Changes, Node0, Node1),
     root(200, 100, Node1, Root1),
-    relayout_tree(measure_none, Changes, Root1, L0, L1),
-    layout_tree(measure_none, Root1, LFresh),
+    relayout_tree(Changes, Root1, L0, L1),
+    layout_tree(Root1, LFresh),
     L1 == LFresh.
 
 :- end_tests(integration).
+
+%  --- Native text measurement (Parley) --- %
+%
+%  These groups exercise the foreign boundary directly. Metrics depend on the
+%  host's fonts, so the assertions are structural (positive/finite boxes) or
+%  relational (monotonic in font size, wrapping, etc.) rather than exact pixels.
+
+:- begin_tests(text_content).
+
+test('non-empty text measures to a positive box') :-
+    measure([run("hello world", attrs{font_size: [16]})], inf, W, H),
+    number(W), number(H),
+    W > 0, H > 0.
+
+test('empty content measures to a finite, non-negative box') :-
+    measure([], inf, W, H),
+    number(W), number(H),
+    W >= 0, H >= 0.
+
+test('more text is wider when unbounded') :-
+    measure([run("short", attrs{font_size: [16]})], inf, Narrow, _),
+    measure([run("short short short", attrs{font_size: [16]})], inf, Wide, _),
+    Wide > Narrow.
+
+test('splitting a run across boundaries does not change the measurement') :-
+    A = attrs{font_size: [16]},
+    measure([run("hello world", A)], inf, W1, H1),
+    measure([run("hello ", A), run("world", A)], inf, W2, H2),
+    W1 =:= W2, H1 =:= H2.
+
+test('unicode text measures to a positive box') :-
+    measure([run("héllo wörld 日本語", attrs{font_size: [16]})], inf, W, H),
+    W > 0, H > 0.
+
+:- end_tests(text_content).
+
+:- begin_tests(text_attributes).
+
+test('font size increases both dimensions') :-
+    measure([run("size", attrs{font_size: [10]})], inf, W1, H1),
+    measure([run("size", attrs{font_size: [40]})], inf, W2, H2),
+    W2 > W1, H2 > H1.
+
+test('every font weight form is accepted') :-
+    forall(member(Wt, [normal, bold, 700]),
+           ( measure([run("weight", attrs{font_size: [16], font_weight: [Wt]})], inf, W, H),
+             W > 0, H > 0 )).
+
+test('every slant is accepted') :-
+    forall(member(S, [normal, italic, oblique]),
+           ( measure([run("slant", attrs{font_size: [16], slant: [S]})], inf, W, H),
+             W > 0, H > 0 )).
+
+test('a named font family is accepted, whether or not it resolves') :-
+    forall(member(F, ['DejaVu Sans', 'NoSuchFontXYZ']),
+           ( measure([run("family", attrs{font_size: [16], font_family: [F]})], inf, W, H),
+             W > 0, H > 0 )).
+
+test('a language tag is accepted') :-
+    forall(member(L, [en, de, fr]),
+           ( measure([run("lang", attrs{font_size: [16], lang: [L]})], inf, W, H),
+             W > 0, H > 0 )).
+
+test('an irrelevant color attribute is ignored') :-
+    measure([run("color", attrs{font_size: [16], color: [red]})], inf, W, H),
+    W > 0, H > 0.
+
+test('all inherited attributes together are accepted') :-
+    measure([run("mixed", attrs{font_size: [20], font_family: ['DejaVu Sans'],
+                                font_weight: [bold], slant: [italic], lang: [en],
+                                color: [blue]})],
+            inf, W, H),
+    W > 0, H > 0.
+
+test('a run with no attributes uses defaults') :-
+    measure([run("plain", attrs{})], inf, W, H),
+    W > 0, H > 0.
+
+:- end_tests(text_attributes).
+
+:- begin_tests(text_boxes).
+
+test('an inline box contributes at least its own size') :-
+    u(20, B),
+    measure([box([], B, B)], inf, W, H),
+    W >= B, H >= B.
+
+test('a zero-sized box measures to a finite box') :-
+    measure([box([], 0, 0)], inf, W, H),
+    number(W), number(H),
+    W >= 0, H >= 0.
+
+test('a box widens the box beyond adjacent text alone') :-
+    A = attrs{font_size: [16]},
+    measure([run("hi", A)], inf, WText, _),
+    u(30, B),
+    measure([run("hi", A), box([], B, B)], inf, WBoth, _),
+    WBoth > WText, WBoth >= B.
+
+:- end_tests(text_boxes).
+
+:- begin_tests(text_options).
+
+test('a large absolute leading grows the line box') :-
+    Runs = [run("leading", attrs{font_size: [16]})],
+    measure_text(Runs, inline_options{leading: none}, inf, metrics(_, H0)),
+    measure_text(Runs, inline_options{leading: 2}, inf, metrics(_, H1)),
+    H1 > H0.
+
+:- end_tests(text_options).
+
+:- begin_tests(text_maxw).
+
+test('a max width above the natural width does not wrap') :-
+    Runs = [run("nowrap", attrs{font_size: [16]})],
+    measure(Runs, inf, W, H),
+    u(1000, Wide),
+    measure(Runs, Wide, W2, H2),
+    W =:= W2, H =:= H2.
+
+test('a narrow max width wraps text to a taller box') :-
+    Runs = [run("the quick brown fox jumps over the lazy dog", attrs{font_size: [16]})],
+    measure(Runs, inf, _, Unwrapped),
+    u(60, Narrow),
+    measure(Runs, Narrow, _, Wrapped),
+    Wrapped > Unwrapped.
+
+:- end_tests(text_maxw).
+
+:- begin_tests(text_errors).
+
+test('an unparseable max width throws a type error',
+     [throws(error(type_error(max_width, bogus), _))]) :-
+    measure([run("x", attrs{font_size: [16]})], bogus, _, _).
+
+test('a variable max width throws an instantiation error',
+     [throws(error(instantiation_error, _))]) :-
+    measure([run("x", attrs{font_size: [16]})], _, _, _).
+
+:- end_tests(text_errors).
+
+:- begin_tests(text_integration).
+
+test('text in a block is measured and carries its state path') :-
+    build(div([font_size(16)], ["hello"]), Node),
+    root(200, 200, Node, Root),
+    layout_tree(Root, L),
+    get_dict(children, L, [child(_, _, P)]),
+    get_dict(path, P, [0]),
+    get_dict(width, P, W), W > 0,
+    get_dict(height, P, H), H > 0.
+
+test('a styled text node is measured end to end') :-
+    build(div([font_size(20), font_weight(bold), slant(italic), lang(en)], ["Styled"]), Node),
+    root(200, 200, Node, Root),
+    layout_tree(Root, L),
+    get_dict(children, L, [child(_, _, P)]),
+    \+ get_dict(pending, P, _),
+    get_dict(width, P, W), W > 0,
+    get_dict(height, P, H), H > 0.
+
+test('an explicitly sized inline element is measured to its box') :-
+    build(div([], [img([display(inline), main_size(5), cross_size(5)], [])]), Node),
+    root(100, 100, Node, Root),
+    layout_tree(Root, L),
+    get_dict(children, L, [child(_, _, P)]),
+    \+ get_dict(pending, P, _),
+    u(5, Five),
+    get_dict(width, P, W), W >= Five,
+    get_dict(height, P, H), H >= Five.
+
+:- end_tests(text_integration).

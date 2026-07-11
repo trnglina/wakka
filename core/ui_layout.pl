@@ -1,11 +1,9 @@
-:- module(ui_layout, [ layout_tree/3, relayout_tree/5, measure_none/2, px_units/2 ]).
+:- module(ui_layout, [ layout_tree/2, relayout_tree/4, px_units/2 ]).
 
 :- use_module(library(apply)).
 :- use_module(library(lists)).
 :- use_module(ui_attributes).
-
-:- meta_predicate layout_tree(2, +, -),
-                  relayout_tree(2, +, +, +, -).
+:- use_module(ui_layout_text).
 
 %  All layout arithmetic is exact integer math in layout units, 1/64 of a
 %  logical pixel (see px_units/2). Attribute lengths (main_size, cross_size,
@@ -14,14 +12,14 @@
 %  resulting layout geometry are all in units. Flex factors are unitless
 %  integers.
 
-%! layout_tree(:Measure, +Root, -Layout) is det.
+%! layout_tree(+Root, -Layout) is det.
 
-layout_tree(Measure, Root, Layout) :-
-    relayout_tree(Measure, [], Root, none, Layout).
+layout_tree(Root, Layout) :-
+    relayout_tree([], Root, none, Layout).
 
-%! relayout_tree(:Measure, +Changes, +Root, +PrevLayout, -Layout) is det.
+%! relayout_tree(+Changes, +Root, +PrevLayout, -Layout) is det.
 
-relayout_tree(Measure, Changes, Root, PrevLayout, Layout) :-
+relayout_tree(Changes, Root, PrevLayout, Layout) :-
     get_dict(viewport_width, Root, W0),
     get_dict(viewport_height, Root, H0),
     px_units(W0, W),
@@ -30,16 +28,8 @@ relayout_tree(Measure, Changes, Root, PrevLayout, Layout) :-
     (  Node == none
     -> Layout = none
     ;  changes_dirty(Changes, Dirty),
-       node_layout(Measure, Dirty, [], Node, constraints(W, W, H, H), PrevLayout, Layout)
+       node_layout(Dirty, [], Node, constraints(W, W, H, H), PrevLayout, Layout)
     ).
-
-%! measure_none(+Request, -Metrics) is failure.
-%
-%  Default measurer: text layout is not implemented, so every inline
-%  becomes a placeholder at its minimum constrained size carrying its
-%  pending measurement request.
-
-measure_none(_, _) :- fail.
 
 %! px_units(+Px, -Units) is det.
 
@@ -84,9 +74,9 @@ path_prefix_([Idx|Prefix], [Idx|Path]) :- path_prefix_(Prefix, Path).
 
 % --- Node Layout --- %
 
-%! node_layout(:Measure, +Dirty, +Path, +Node, +Constraints, +Prev, -Layout) is det.
+%! node_layout(+Dirty, +Path, +Node, +Constraints, +Prev, -Layout) is det.
 
-node_layout(Measure, Dirty, Path, Node, Constraints, Prev, Layout) :-
+node_layout(Dirty, Path, Node, Constraints, Prev, Layout) :-
     (  is_dict(Prev),
        get_dict(constraints, Prev, PrevConstraints),
        PrevConstraints == Constraints,
@@ -94,13 +84,13 @@ node_layout(Measure, Dirty, Path, Node, Constraints, Prev, Layout) :-
     -> Layout = Prev
     ;  get_dict(text, Node, _)
     -> inline_options_(attrs{}, Options),
-       inline_layout(Measure, Dirty, Path, Node, Options, Constraints, none, Layout)
-    ;  block_layout(Measure, Dirty, Path, Node, Constraints, Prev, Layout)
+       inline_layout(Dirty, Path, Node, Options, Constraints, none, Layout)
+    ;  block_layout(Dirty, Path, Node, Constraints, Prev, Layout)
     ).
 
-%! block_layout(:Measure, +Dirty, +Path, +Node, +Constraints, +Prev, -Layout) is det.
+%! block_layout(+Dirty, +Path, +Node, +Constraints, +Prev, -Layout) is det.
 
-block_layout(Measure, Dirty, Path, Node, Constraints, Prev, Layout) :-
+block_layout(Dirty, Path, Node, Constraints, Prev, Layout) :-
     Constraints = constraints(MinW, MaxW, MinH, MaxH),
     get_dict(attributes, Node, Attrs),
     get_dict(children, Node, Children),
@@ -116,7 +106,7 @@ block_layout(Measure, Dirty, Path, Node, Constraints, Prev, Layout) :-
     axis_(Dir, PadW, PadH, PadMain, PadCross),
     bounded_sub_(MaxCross, PadCross, ContentCrossMax),
     flow_items_(Children, 0, Items),
-    Ctx = ctx(Measure, Dirty, Path, Prev, Dir, CrossAlign, ContentCrossMax, Options),
+    Ctx = ctx(Dirty, Path, Prev, Dir, CrossAlign, ContentCrossMax, Options),
     measure_rigid_items_(Items, Ctx, RigidSum, TotalFlex, Measured0),
     (  TotalFlex > 0
     -> main_extent_(MaxMain, PadMain, Path, MainRoom),
@@ -243,7 +233,7 @@ item_fit_(inline(_, Node), Fit) :-
 
 measure_item_(block(Idx, Child), Ctx, MainSpec,
               measured(Lead, Trail, CrossLead, CrossTrail, MainSize, CrossSize, ChildLayout)) :-
-    Ctx = ctx(Measure, Dirty, Path, Prev, Dir, CrossAlign, ContentCrossMax, _),
+    Ctx = ctx(Dirty, Path, Prev, Dir, CrossAlign, ContentCrossMax, _),
     get_dict(attributes, Child, Attrs),
     box_sides_(Attrs, margin, MT, MR, MB, ML),
     axis_(Dir, ML, MT, Lead, CrossLead),
@@ -258,21 +248,21 @@ measure_item_(block(Idx, Child), Ctx, MainSpec,
     axis_(Dir, CMaxW, CMaxH, CMaxMain, CMaxCross),
     append(Path, [Idx], ChildPath),
     prev_item_layout_(Prev, Idx, PrevChild),
-    node_layout(Measure, Dirty, ChildPath, Child,
+    node_layout(Dirty, ChildPath, Child,
                 constraints(CMinW, CMaxW, CMinH, CMaxH), PrevChild, ChildLayout),
     get_dict(width, ChildLayout, ChildW),
     get_dict(height, ChildLayout, ChildH),
     axis_(Dir, ChildW, ChildH, MainSize, CrossSize).
 measure_item_(inline(Idx, Node), Ctx, MainSpec,
               measured(0, 0, 0, 0, MainSize, CrossSize, InlineLayout)) :-
-    Ctx = ctx(Measure, Dirty, Path, Prev, Dir, CrossAlign, ContentCrossMax, Options),
+    Ctx = ctx(Dirty, Path, Prev, Dir, CrossAlign, ContentCrossMax, Options),
     main_spec_bounds_(MainSpec, 0, 0, MinMain, MaxMain),
     cross_bounds_(CrossAlign, ContentCrossMax, MinCross, MaxCross),
     axis_(Dir, MinW, MinH, MinMain, MinCross),
     axis_(Dir, MaxW, MaxH, MaxMain, MaxCross),
     append(Path, [Idx], ChildPath),
     prev_item_layout_(Prev, Idx, PrevChild),
-    inline_layout(Measure, Dirty, ChildPath, Node, Options,
+    inline_layout(Dirty, ChildPath, Node, Options,
                   constraints(MinW, MaxW, MinH, MaxH), PrevChild, InlineLayout),
     get_dict(width, InlineLayout, InlineW),
     get_dict(height, InlineLayout, InlineH),
@@ -333,10 +323,6 @@ place_items_([measured(Lead, Trail, CrossLead, CrossTrail, MainSize, CrossSize, 
     place_items_(Ms, Idx1, Extents1, PCtx, Cs).
 
 %! space_cum_(+MainAlign, +Free, +Idx, +NItems, -Space) is det.
-%
-%  Space is the total main-axis free space placed before item Idx. The
-%  space_* alignments compute it as a cumulative quotient, so the gaps
-%  partition Free exactly and per-gap rounding never accumulates.
 
 space_cum_(start, _, _, _, 0).
 space_cum_(end, Free, _, _, Free).
@@ -361,26 +347,24 @@ cross_offset_(end, Room, Extent, CrossLead, Offset) :-
 
 % --- Inline Layout --- %
 
-%! inline_layout(:Measure, +Dirty, +Path, +Node, +Options, +Constraints, +Prev, -Layout) is det.
+%! inline_layout(+Dirty, +Path, +Node, +Options, +Constraints, +Prev, -Layout) is det.
 %
 %  Lays out one inline node (a text node or a display(inline) element at
-%  Path) by requesting an inline measurement:
+%  Path) by measuring its content through ui_layout_text:
 %
-%    Request  = measure_inline(Runs, Options, MaxW)
+%    measure_text(Runs, Options, MaxW, metrics(W, H))
 %    Runs    ::= [ run(Text, InheritedAttrs)  % text node
 %                | box(RelPath, W, H)         % explicitly sized inline element,
 %                | ... ]                      %   RelPath relative to Path
-%    Options  = inline_options{alignment: _, leading: _}
+%    Options  = inline_options{leading: _}
 %    MaxW     = units | inf
 %
-%  The request and the returned metrics speak layout units. Metrics are
-%  ceiled to whole units (so measured content never overflows its box) and
-%  clamped into Constraints, so a tight main axis (a tight flex share)
-%  forces the inline's box regardless of its content. When Measure fails,
-%  the inline becomes a placeholder at its minimum constrained size
-%  carrying the request under the pending key.
+%  The runs and the returned metrics speak layout units. Metrics are ceiled
+%  to whole units (so measured content never overflows its box) and clamped
+%  into Constraints, so a tight main axis (a tight flex share) forces the
+%  inline's box regardless of its content.
 
-inline_layout(Measure, Dirty, Path, Node, Options, Constraints, Prev, Layout) :-
+inline_layout(Dirty, Path, Node, Options, Constraints, Prev, Layout) :-
     (  is_dict(Prev),
        get_dict(constraints, Prev, Constraints0),
        Constraints0 == Constraints,
@@ -390,19 +374,13 @@ inline_layout(Measure, Dirty, Path, Node, Options, Constraints, Prev, Layout) :-
     -> Layout = Prev
     ;  Constraints = constraints(MinW, MaxW, MinH, MaxH),
        inline_node_runs_(Node, [], Runs, []),
-       Request = measure_inline(Runs, Options, MaxW),
-       (  call(Measure, Request, metrics(W0, H0))
-       -> Wc is ceiling(W0),
-          Hc is ceiling(H0),
-          clamp_(Wc, MinW, MaxW, W),
-          clamp_(Hc, MinH, MaxH, H),
-          Layout = layout{width: W, height: H, constraints: Constraints,
-                          options: Options, path: Path}
-       ;  clamp_(0, MinW, MaxW, W),
-          clamp_(0, MinH, MaxH, H),
-          Layout = layout{width: W, height: H, pending: Request, constraints: Constraints,
-                          options: Options, path: Path}
-       )
+       measure_text(Runs, Options, MaxW, metrics(W0, H0)),
+       Wc is ceiling(W0),
+       Hc is ceiling(H0),
+       clamp_(Wc, MinW, MaxW, W),
+       clamp_(Hc, MinH, MaxH, H),
+       Layout = layout{width: W, height: H, constraints: Constraints,
+                       options: Options, path: Path}
     ).
 
 %! inline_node_runs_(+Node, +RevPath, -Runs, ?Tail) is det.
@@ -452,8 +430,7 @@ attr_default_(Attrs, Key, Value) :-
     ;  layout_default(Key, Value)
     ).
 
-inline_options_(Attrs, inline_options{alignment: Alignment, leading: Leading}) :-
-    attr_default_(Attrs, alignment, Alignment),
+inline_options_(Attrs, inline_options{leading: Leading}) :-
     attr_default_(Attrs, leading, Leading).
 
 %! clamped_size_(+Attrs, +Key, +Min, +Max, -Explicit) is det.
