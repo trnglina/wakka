@@ -5,3 +5,7 @@ edition.workspace = true
 
 [lib]
 crate-type = ["cdylib"]
+
+[dependencies]
+parley = { version = "0.11.0", features = ["complex-scripts"] }
+swi_fli = { version = "0.1.0", path = "../swi_fli" }

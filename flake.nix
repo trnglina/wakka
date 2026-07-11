@@ -75,6 +75,8 @@
           buildInputs = [
             rust
             swi-prolog
+
+            pkgs.fontconfig
             pkgs.pkg-config
             pkgs.rustPlatform.bindgenHook
           ];
