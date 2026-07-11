@@ -220,6 +220,42 @@ pub fn measure(items: &[Item], options: &Options, max_advance: Option<f32>) -> M
     })
 }
 
+/// One text range per glyph in a run, in `positioned_glyphs` order
+/// (`visual_clusters().flat_map(glyphs)`). A ligature glyph's range spans the
+/// whole ligature: Parley emits the glyph on the `LigatureStart` cluster (whose
+/// own range is just the first char) and zero glyphs on the following
+/// `LigatureComponent` clusters, so their bytes are folded back into the start.
+fn glyph_text_ranges(run: &parley::Run<Brush>) -> Vec<std::ops::Range<usize>> {
+    // Pass 1, logical order: a `LigatureStart` is immediately followed by its
+    // components, so components fold forward onto the last glyph-bearing cluster.
+    // Keyed by start byte so the visual pass can look them up under RTL reorder.
+    let mut extended: HashMap<usize, std::ops::Range<usize>> = HashMap::new();
+    let mut key: Option<usize> = None;
+    for c in run.clusters() {
+        let tr = c.text_range();
+        if c.is_ligature_continuation() {
+            if let Some(e) = key.and_then(|k| extended.get_mut(&k)) {
+                e.start = e.start.min(tr.start);
+                e.end = e.end.max(tr.end);
+            }
+        } else {
+            extended.insert(tr.start, tr.clone());
+            key = Some(tr.start);
+        }
+    }
+
+    // Pass 2, visual order: one entry per glyph, matching `positioned_glyphs`.
+    let mut ranges = Vec::new();
+    for c in run.visual_clusters() {
+        let tr = c.text_range();
+        let range = extended.get(&tr.start).cloned().unwrap_or(tr);
+        for _ in c.glyphs() {
+            ranges.push(range.clone());
+        }
+    }
+    ranges
+}
+
 /// Walks the laid-out lines into owned [`Line`] data.
 fn walk_lines(layout: &Layout<Brush>) -> Vec<Line> {
     let mut lines = Vec::new();
@@ -228,8 +264,8 @@ fn walk_lines(layout: &Layout<Brush>) -> Vec<Line> {
         let mut items = Vec::new();
 
         // A single Parley run may be split into several glyph runs (by color);
-        // they arrive consecutively and share one visual glyph -> cluster
-        // text-range map, indexed by `cursor`.
+        // they arrive consecutively and share one per-glyph text-range map (in
+        // `positioned_glyphs` order), indexed by `cursor`.
         let mut run_ranges: Vec<std::ops::Range<usize>> = Vec::new();
         let mut cursor = 0usize;
         let mut cur_run: Option<std::ops::Range<usize>> = None;
@@ -240,13 +276,7 @@ fn walk_lines(layout: &Layout<Brush>) -> Vec<Line> {
                     let run = gr.run();
                     let rr = run.text_range();
                     if cur_run.as_ref() != Some(&rr) {
-                        run_ranges = run
-                            .visual_clusters()
-                            .flat_map(|c| {
-                                let tr = c.text_range();
-                                c.glyphs().map(move |_| tr.clone())
-                            })
-                            .collect();
+                        run_ranges = glyph_text_ranges(run);
                         cursor = 0;
                         cur_run = Some(rr);
                     }

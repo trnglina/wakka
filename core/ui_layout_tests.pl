@@ -748,6 +748,30 @@ test('glyph clusters cover the source text') :-
     min_list(Starts, 0),
     max_list(Ends, 2).
 
+%  The glyph byte ranges of a whitespace-free ASCII word must tile [0, ByteLen)
+%  with no gaps: every source byte belongs to a glyph, and a ligature glyph
+%  covers all of its components' bytes. Font-agnostic — trivially true where the
+%  host font does not ligate, and violated by dropped ligature-component bytes.
+
+ranges_tile([], Pos, Pos).
+ranges_tile([S-E|Rest], Pos, Len) :-
+    S =:= Pos,
+    E > S,
+    ranges_tile(Rest, E, Len).
+
+test('glyph ranges tile a word with no gaps') :-
+    Word = "difficult",
+    measure_lines([run(Word, attrs{font_size: [16]})], inf, Lines),
+    findall(S-E,
+            ( member(line(_, _, _, Items), Lines),
+              member(glyph_run(_, _, _, _, Glyphs), Items),
+              member(glyph(_, _, _, _, S, E), Glyphs) ),
+            Ranges),
+    % Distinct ranges: several glyphs of one cluster share a range.
+    sort(0, @<, Ranges, Sorted),
+    string_length(Word, Len),
+    ranges_tile(Sorted, 0, Len).
+
 test('an inline box appears as a positioned box item') :-
     u(20, B),
     measure_lines([run("a", attrs{font_size: [16]}), box([], B, B)], inf, Lines),
