@@ -243,11 +243,13 @@ unsafe fn parse_glyph_runs(lines: term_t, at: &Atoms) -> Vec<paint::GlyphRun> {
 
 unsafe fn parse_glyph_run(t: term_t, at: &Atoms) -> Option<paint::GlyphRun> {
     unsafe {
-        // glyph_run(font(Family, Weight, Slant), Size, Color, synth(Bold, Skew), Glyphs)
-        let font = arg(1, t);
-        let family = term_text(arg(1, font))?;
-        let weight = term_number(arg(2, font))? as f32;
-        let slant = parse_slant(arg(3, font), at);
+        // glyph_run(font(BlobId, Index, Family), Size, Color, synth(Bold, Skew), Glyphs)
+        let font_term = arg(1, t);
+        let blob_id = term_i64(arg(1, font_term))? as u64;
+        let index = term_i64(arg(2, font_term))? as u32;
+        // Recover the exact face the run was shaped against; skip if it is not
+        // registered (it always is when the run came from measure_text).
+        let font = crate::font::lookup_font(blob_id, index)?;
         let size = px(arg(2, t));
         let color = parse_color(arg(3, t), at);
         let (bold, skew) = parse_synth(arg(4, t));
@@ -256,9 +258,7 @@ unsafe fn parse_glyph_run(t: term_t, at: &Atoms) -> Option<paint::GlyphRun> {
             .filter_map(|g| parse_glyph(g))
             .collect();
         Some(paint::GlyphRun {
-            family,
-            weight,
-            slant,
+            font,
             size,
             color,
             bold,
@@ -286,23 +286,6 @@ unsafe fn parse_synth(t: term_t) -> (bool, Option<f32>) {
         let bold = term_text(arg(1, t)).as_deref() == Some("true");
         let skew = term_number(arg(2, t)).map(|d| d as f32);
         (bold, skew)
-    }
-}
-
-unsafe fn parse_slant(t: term_t, at: &Atoms) -> paint::Slant {
-    unsafe {
-        if let Some(s) = term_text(t) {
-            match s.as_str() {
-                "italic" => return paint::Slant::Italic,
-                "normal" => return paint::Slant::Normal,
-                _ => {}
-            }
-        }
-        let mut f: functor_t = 0;
-        if PL_get_functor(t, &mut f) && f == at.oblique {
-            return paint::Slant::Oblique(term_number(arg(1, t)).map(|d| d as f32));
-        }
-        paint::Slant::Normal
     }
 }
 

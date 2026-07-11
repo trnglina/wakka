@@ -25,8 +25,6 @@ pub struct Atoms {
     pub color: atom_t,
     pub leading: atom_t,
     pub none: atom_t,
-    pub normal: atom_t,
-    pub italic: atom_t,
     pub truth: atom_t,
     pub falsity: atom_t,
     pub metrics: functor_t,
@@ -36,7 +34,6 @@ pub struct Atoms {
     pub box_item: functor_t,
     pub font: functor_t,
     pub synth: functor_t,
-    pub oblique: functor_t,
     pub glyphs: functor_t,
     pub rgb: functor_t,
     pub rgba: functor_t,
@@ -61,8 +58,6 @@ pub fn atoms() -> Atoms {
                 color: a(b"color\0"),
                 leading: a(b"leading\0"),
                 none: a(b"none\0"),
-                normal: a(b"normal\0"),
-                italic: a(b"italic\0"),
                 truth: a(b"true\0"),
                 falsity: a(b"false\0"),
                 metrics: f(b"metrics\0", 3),
@@ -72,7 +67,6 @@ pub fn atoms() -> Atoms {
                 box_item: f(b"box\0", 5),
                 font: f(b"font\0", 3),
                 synth: f(b"synth\0", 2),
-                oblique: f(b"oblique\0", 1),
                 glyphs: f(b"glyphs\0", 1),
                 rgb: f(b"rgb\0", 3),
                 rgba: f(b"rgba\0", 4),
@@ -91,6 +85,18 @@ pub unsafe fn term_text(t: term_t) -> Option<String> {
         let flags = (CVT_ATOM | CVT_STRING | BUF_DISCARDABLE | REP_UTF8) as c_uint;
         if PL_get_chars(t, &mut ptr, flags) && !ptr.is_null() {
             Some(CStr::from_ptr(ptr).to_string_lossy().into_owned())
+        } else {
+            None
+        }
+    }
+}
+
+/// Reads an integer term as `i64`. `None` for floats, other types and variables.
+pub unsafe fn term_i64(t: term_t) -> Option<i64> {
+    unsafe {
+        let mut i = 0i64;
+        if PL_get_int64(t, &mut i) {
+            Some(i)
         } else {
             None
         }

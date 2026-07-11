@@ -714,14 +714,21 @@ test('text produces glyph runs with a font descriptor and positioned glyphs') :-
     Lines = [line(Baseline, Ascent, Descent, _)|_],
     maplist(number, [Baseline, Ascent, Descent]),
     first_glyph_run(Lines,
-        glyph_run(font(Family, Weight, Style), Size, _, synth(Bold, _), Glyphs)),
+        glyph_run(font(FontId, Index, Family), Size, _, synth(Bold, _), Glyphs)),
+    integer(FontId), integer(Index), Index >= 0,
     string(Family), string_length(Family, FN), FN > 0,
-    number(Weight), number(Size),
-    once((Style == normal ; Style == italic ; Style = oblique(_))),
+    number(Size),
     memberchk(Bold, [true, false]),
     Glyphs = [_|_],
     forall(member(glyph(Id, X, Y, Adv, S, E), Glyphs),
            ( maplist(number, [Id, X, Y, Adv]), integer(S), integer(E), S =< E )).
+
+test('runs shaped against the same face share a font id') :-
+    measure_lines([run("hello", attrs{font_size: [16]})], inf, L1),
+    measure_lines([run("world", attrs{font_size: [16]})], inf, L2),
+    first_glyph_run(L1, glyph_run(font(Id1, Ix1, _), _, _, _, _)),
+    first_glyph_run(L2, glyph_run(font(Id2, Ix2, _), _, _, _, _)),
+    Id1 == Id2, Ix1 == Ix2.
 
 test('a run color is carried through to its glyph run') :-
     measure_lines([run("x", attrs{font_size: [16], color: [red]})], inf, Lines),

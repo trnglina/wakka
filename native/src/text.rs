@@ -169,13 +169,16 @@ unsafe fn build_item(it: &LineItem, colors: &[term_t], at: &Atoms) -> term_t {
     unsafe {
         match it {
             LineItem::GlyphRun(gr) => {
+                // Register the exact shaped face and key the run to it, so paint
+                // renders these glyph ids against that same face.
+                let (blob_id, index) = crate::font::register_font(gr.font.clone());
                 let desc = PL_new_term_ref();
                 PL_cons_functor(
                     desc,
                     at.font,
+                    put_int(blob_id as i64),
+                    put_int(index as i64),
                     put_string(&gr.family),
-                    put_float(gr.weight as f64),
-                    put_slant(gr.slant, at),
                 );
                 let color = if gr.color == 0 {
                     put_atom(at.none)
@@ -231,24 +234,6 @@ unsafe fn build_item(it: &LineItem, colors: &[term_t], at: &Atoms) -> term_t {
                     units(*width),
                     units(*height),
                 );
-                t
-            }
-        }
-    }
-}
-
-unsafe fn put_slant(s: Slant, at: &Atoms) -> term_t {
-    unsafe {
-        match s {
-            Slant::Normal => put_atom(at.normal),
-            Slant::Italic => put_atom(at.italic),
-            Slant::Oblique(deg) => {
-                let a = match deg {
-                    Some(d) => put_float(d as f64),
-                    None => put_atom(at.none),
-                };
-                let t = PL_new_term_ref();
-                PL_cons_functor(t, at.oblique, a);
                 t
             }
         }

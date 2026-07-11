@@ -7,6 +7,7 @@
 #![allow(clippy::missing_safety_doc)]
 
 mod fli;
+mod font;
 mod paint;
 mod text;
 

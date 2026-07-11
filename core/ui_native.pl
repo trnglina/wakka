@@ -13,7 +13,7 @@
 %      the per-glyph layout, all in layout units (1/64 px, floats):
 %
 %        Lines  = [ line(Baseline, Ascent, Descent, Items), ... ]
-%        Item   = glyph_run(font(Family, Weight, Style), Size, Color,
+%        Item   = glyph_run(font(FontId, Index, Family), Size, Color,
 %                           synth(Bold, Skew), Glyphs)
 %               | box(BoxId, X, Y, W, H)
 %        Glyphs = [ glyph(Id, X, Y, Advance, Start, End), ... ]
@@ -21,8 +21,11 @@
 %      Id is a glyph id (not a codepoint); X/Y are absolute within the inline's
 %      box; Start-End is the glyph's cluster's byte range into the
 %      run-concatenated text; Color is the run's `color` attribute value
-%      verbatim, or the atom `none`. Throws type_error(max_width, MaxW) when
-%      MaxW is neither a number nor `inf`.
+%      verbatim, or the atom `none`. FontId/Index identify the exact face the run
+%      was shaped against — the paint side renders these glyph ids against that
+%      registered face rather than re-resolving from Family (which is carried for
+%      inspection only). Throws type_error(max_width, MaxW) when MaxW is neither a
+%      number nor `inf`.
 %
 %    scene_put(+Path, +X, +Y, +W, +H, +Draw)
 %    scene_move(+Path, +X, +Y)

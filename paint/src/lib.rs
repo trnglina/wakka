@@ -2,13 +2,20 @@
 //! lightweight state ref); hierarchy and z-order are implied by the path. This
 //! crate is Prolog-agnostic — the `native` crate parses terms into the input
 //! types below and holds the [`Scene`]/[`Renderer`] instances.
+//!
+//! Each glyph run carries the exact [`FontData`] it was shaped against, so the
+//! renderer draws glyph ids against their own face — it never resolves fonts,
+//! which keeps ids and faces in lockstep with the measurer.
 
 use std::collections::BTreeMap;
-use std::collections::HashMap;
 
 use vello::kurbo::{Affine, Diagonal2};
-use vello::peniko::{Color, Fill, FontData};
+use vello::peniko::{Color, Fill};
 use vello::{AaConfig, AaSupport, FontEmbolden, RenderParams, RendererOptions};
+
+/// The exact shareable font resource a glyph run was shaped against. Re-exported
+/// so `native` can hand the measurer's face straight through.
+pub use vello::peniko::FontData;
 
 /// Synthetic-bold outline expansion, as a fraction of the font size (in pixels).
 /// Only fattens outlines; glyph positions come from the shaped advances, so this
@@ -18,14 +25,6 @@ const SYNTH_BOLD_STRENGTH: f64 = 0.02;
 /// A node's path: its state path, e.g. `[0, 1]`.
 pub type Path = Vec<i64>;
 
-/// Font slant.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Slant {
-    Normal,
-    Italic,
-    Oblique(Option<f32>),
-}
-
 /// One positioned glyph, in pixels relative to its node's origin.
 #[derive(Clone, Copy, Debug)]
 pub struct GlyphPos {
@@ -34,12 +33,11 @@ pub struct GlyphPos {
     pub y: f32,
 }
 
-/// A run of glyphs sharing a resolved face, size and color.
+/// A run of glyphs sharing one face, size and color.
 #[derive(Clone, Debug)]
 pub struct GlyphRun {
-    pub family: String,
-    pub weight: f32,
-    pub slant: Slant,
+    /// The exact face the run was shaped against; its glyph ids are drawn as-is.
+    pub font: FontData,
     /// Font size in pixels.
     pub size: f32,
     pub color: [u8; 4],
@@ -125,11 +123,9 @@ impl Scene {
     }
 }
 
-/// Wraps a vello renderer and a font cache; renders a [`Scene`] to a wgpu
-/// target texture.
+/// Wraps a vello renderer; renders a [`Scene`] to a wgpu target texture.
 pub struct Renderer {
     vello: vello::Renderer,
-    fonts: FontCache,
 }
 
 impl Renderer {
@@ -143,10 +139,7 @@ impl Renderer {
                 pipeline_cache: None,
             },
         )?;
-        Ok(Self {
-            vello,
-            fonts: FontCache::new(),
-        })
+        Ok(Self { vello })
     }
 
     /// Composites the scene and renders it into `view` (an `Rgba8Unorm`
@@ -169,13 +162,10 @@ impl Renderer {
             let (ax, ay) = scene.absolute(path);
             let transform = Affine::translate((ax as f64, ay as f64));
             for run in runs {
-                let Some(font) = self.fonts.resolve(&run.family, run.weight, run.slant) else {
-                    continue;
-                };
                 let color =
                     Color::from_rgba8(run.color[0], run.color[1], run.color[2], run.color[3]);
                 let mut builder = vs
-                    .draw_glyphs(&font)
+                    .draw_glyphs(&run.font)
                     .font_size(run.size)
                     .brush(color)
                     .transform(transform);
@@ -218,65 +208,5 @@ impl Renderer {
                 antialiasing_method: AaConfig::Area,
             },
         )
-    }
-}
-
-/// Resolves `font(Family, Weight, Slant)` descriptors to concrete faces via
-/// fontique (glyph ids match Parley given the same fontconfig).
-struct FontCache {
-    collection: fontique::Collection,
-    source_cache: fontique::SourceCache,
-    cache: HashMap<(String, u32, u8), Option<FontData>>,
-}
-
-impl FontCache {
-    fn new() -> Self {
-        Self {
-            collection: fontique::Collection::new(fontique::CollectionOptions::default()),
-            source_cache: fontique::SourceCache::new(fontique::SourceCacheOptions::default()),
-            cache: HashMap::new(),
-        }
-    }
-
-    fn resolve(&mut self, family: &str, weight: f32, slant: Slant) -> Option<FontData> {
-        let key = (family.to_string(), weight.to_bits(), slant_key(slant));
-        if let Some(hit) = self.cache.get(&key) {
-            return hit.clone();
-        }
-
-        let mut found: Option<(fontique::Blob<u8>, u32)> = None;
-        {
-            let mut query = self.collection.query(&mut self.source_cache);
-            query.set_families([family]);
-            query.set_attributes(fontique::Attributes {
-                width: fontique::FontWidth::NORMAL,
-                style: font_style(slant),
-                weight: fontique::FontWeight::new(weight),
-            });
-            query.matches_with(|font| {
-                found = Some((font.blob.clone(), font.index));
-                fontique::QueryStatus::Stop
-            });
-        }
-
-        let font = found.map(|(blob, index)| FontData::new(blob, index));
-        self.cache.insert(key, font.clone());
-        font
-    }
-}
-
-fn slant_key(slant: Slant) -> u8 {
-    match slant {
-        Slant::Normal => 0,
-        Slant::Italic => 1,
-        Slant::Oblique(_) => 2,
-    }
-}
-
-fn font_style(slant: Slant) -> fontique::FontStyle {
-    match slant {
-        Slant::Normal => fontique::FontStyle::Normal,
-        Slant::Italic => fontique::FontStyle::Italic,
-        Slant::Oblique(deg) => fontique::FontStyle::Oblique(deg),
     }
 }

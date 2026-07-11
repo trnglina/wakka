@@ -21,6 +21,11 @@ use parley::{
 };
 use skrifa::{string::StringId, FontRef, MetadataProvider};
 
+/// The exact shareable font resource a run was shaped against. Re-exported so
+/// the caller can render with the identical face (matching glyph ids) instead of
+/// re-resolving from a descriptor.
+pub use parley::FontData;
+
 /// Color id carried opaquely through layout. `0` means "no color".
 pub type ColorId = u64;
 
@@ -109,10 +114,11 @@ pub struct Synth {
 /// A run of glyphs sharing one resolved face, size and color.
 #[derive(Clone, Debug)]
 pub struct GlyphRun {
-    /// Resolved family name of the face Parley shaped with.
+    /// The exact face Parley shaped with; render against this so the glyph ids
+    /// match. Carries the font blob and face index.
+    pub font: FontData,
+    /// Resolved family name of that face, for inspection/debugging only.
     pub family: String,
-    pub weight: f32,
-    pub slant: Slant,
     pub size: f32,
     pub color: ColorId,
     pub synth: Synth,
@@ -245,7 +251,6 @@ fn walk_lines(layout: &Layout<Brush>) -> Vec<Line> {
                         cur_run = Some(rr);
                     }
 
-                    let attrs = run.font_attrs();
                     let synth = run.synthesis();
                     let positioned: Vec<_> = gr.positioned_glyphs().collect();
                     let mut glyphs = Vec::with_capacity(positioned.len());
@@ -263,9 +268,8 @@ fn walk_lines(layout: &Layout<Brush>) -> Vec<Line> {
                     cursor += positioned.len();
 
                     items.push(LineItem::GlyphRun(GlyphRun {
+                        font: run.font().clone(),
                         family: family_name(run.font()),
-                        weight: attrs.weight.value(),
-                        slant: to_slant(attrs.style),
                         size: run.font_size(),
                         color: gr.style().brush,
                         synth: Synth {
@@ -304,14 +308,6 @@ fn font_style(slant: Slant) -> FontStyle {
         Slant::Normal => FontStyle::Normal,
         Slant::Italic => FontStyle::Italic,
         Slant::Oblique(deg) => FontStyle::Oblique(deg),
-    }
-}
-
-fn to_slant(style: FontStyle) -> Slant {
-    match style {
-        FontStyle::Normal => Slant::Normal,
-        FontStyle::Italic => Slant::Italic,
-        FontStyle::Oblique(deg) => Slant::Oblique(deg),
     }
 }
 
