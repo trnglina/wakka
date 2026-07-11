@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["layout_text"]
+members = ["layout_text", "swi_fli"]
 
 [workspace.package]
 edition = "2024"
