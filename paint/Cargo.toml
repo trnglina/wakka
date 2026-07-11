@@ -1,0 +1,8 @@
+[package]
+name = "paint"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+fontique = "0.11"
+vello = "0.9.0"

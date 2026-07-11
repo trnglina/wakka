@@ -10,7 +10,7 @@ attribute(key, 1, []).
 attribute(lang, 1, [inherit, layout]).
 
 % Text rendering attributes
-attribute(color, 1, [inherit]).
+attribute(color, 1, [inherit, paint]).
 attribute(font_family, 1, [inherit, layout]).
 attribute(font_size, 1, [inherit, layout]).
 attribute(font_weight, 1, [inherit, layout]).

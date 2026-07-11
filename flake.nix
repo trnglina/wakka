@@ -79,7 +79,18 @@
             pkgs.fontconfig
             pkgs.pkg-config
             pkgs.rustPlatform.bindgenHook
+
+            # wgpu/vello: the Vulkan loader (dlopened at render time; the host
+            # ICD is picked up from /run/opengl-driver on NixOS) plus a
+            # software-Vulkan fallback and tooling.
+            pkgs.vulkan-loader
+            pkgs.mesa
+            pkgs.vulkan-tools
           ];
+
+          # wgpu finds libvulkan.so via the loader; on NixOS the driver ICD
+          # lives under /run/opengl-driver.
+          LD_LIBRARY_PATH = "${pkgs.vulkan-loader}/lib:/run/opengl-driver/lib";
         };
       }
     );

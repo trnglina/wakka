@@ -1,9 +1,9 @@
-:- module(ui_layout, [ layout_tree/2, relayout_tree/4, px_units/2 ]).
+:- module(ui_layout, [ layout_tree/2, relayout_tree/4, layout_changes/3, px_units/2 ]).
 
 :- use_module(library(apply)).
 :- use_module(library(lists)).
 :- use_module(ui_attributes).
-:- use_module(ui_layout_text).
+:- use_module(ui_native).
 
 %  All layout arithmetic is exact integer math in layout units, 1/64 of a
 %  logical pixel (see px_units/2). Attribute lengths (main_size, cross_size,
@@ -39,11 +39,19 @@ px_units(Px, Units) :-
 % --- Dirty Tracking --- %
 
 %! changes_dirty(+Changes, -Dirty) is det.
+%
+%  Dirty = dirty(Shallow, Deep, Paint). Shallow/Deep drive layout reuse (a
+%  Deep path invalidates itself, its ancestors and its descendants; a Shallow
+%  path only itself and its ancestors). Paint is a separate, deep-style set for
+%  presentational attributes that change a node's rendered content but not its
+%  geometry (currently `color`): a Paint path is recolored in place, reusing all
+%  measured geometry.
 
-changes_dirty(Changes, dirty(Shallow, Deep)) :-
-    foldl(change_dirty_, Changes, []-[], S-D),
+changes_dirty(Changes, dirty(Shallow, Deep, Paint)) :-
+    foldl(change_dirty_, Changes, []-[]-[], S-D-P),
     sort(S, Shallow),
-    sort(D, Deep).
+    sort(D, Deep),
+    sort(P, Paint).
 
 change_dirty_(set_attribute(Path, Key, _), Acc0, Acc) :- attribute_dirty_(Path, Key, Acc0, Acc).
 change_dirty_(remove_attribute(Path, Key), Acc0, Acc) :- attribute_dirty_(Path, Key, Acc0, Acc).
@@ -51,23 +59,34 @@ change_dirty_(insert_child(Path, _), Acc0, Acc) :- tree_dirty_(Path, Acc0, Acc).
 change_dirty_(detach_child(Path, _), Acc0, Acc) :- tree_dirty_(Path, Acc0, Acc).
 change_dirty_(attach_child(Path, _), Acc0, Acc) :- tree_dirty_(Path, Acc0, Acc).
 
-attribute_dirty_(Path, Key, S-D, Acc) :-
-    (  \+ attribute_flag(Key, layout)
-    -> Acc = S-D
-    ;  attribute_flag(Key, inherit)
-    -> Acc = S-[Path|D]
-    ;  Acc = [Path|S]-D
+attribute_dirty_(Path, Key, S-D-P, Acc) :-
+    (  attribute_flag(Key, layout)
+    -> (  attribute_flag(Key, inherit)
+       -> Acc = S-[Path|D]-P
+       ;  Acc = [Path|S]-D-P  )
+    ;  attribute_flag(Key, paint)
+    -> Acc = S-D-[Path|P]
+    ;  Acc = S-D-P
     ).
 
-tree_dirty_([], S-D, S-[[]|D]) :- !.
-tree_dirty_(Path, S-D, S-[Parent|D]) :-
+tree_dirty_([], S-D-P, S-[[]|D]-P) :- !.
+tree_dirty_(Path, S-D-P, S-[Parent|D]-P) :-
     once(append(Parent, [_], Path)).
 
-%! subtree_clean(+Path, +Dirty) is semidet.
+%! subtree_layout_clean(+Path, +Dirty) is semidet.
 
-subtree_clean(Path, dirty(Shallow, Deep)) :-
+subtree_layout_clean(Path, dirty(Shallow, Deep, _)) :-
     \+ ( member(P, Shallow), path_prefix_(Path, P) ),
     \+ ( member(P, Deep), ( path_prefix_(Path, P) ; path_prefix_(P, Path) ) ).
+
+%! subtree_paint_clean(+Path, +Dirty) is semidet.
+%
+%  A subtree needs no recolor when no Paint path lies on it or under it (a Paint
+%  path above Path means Path is inside a recolored subtree; below means Path is
+%  an ancestor that must be descended to reach it).
+
+subtree_paint_clean(Path, dirty(_, _, Paint)) :-
+    \+ ( member(P, Paint), ( path_prefix_(Path, P) ; path_prefix_(P, Path) ) ).
 
 path_prefix_([], _).
 path_prefix_([Idx|Prefix], [Idx|Path]) :- path_prefix_(Prefix, Path).
@@ -80,13 +99,111 @@ node_layout(Dirty, Path, Node, Constraints, Prev, Layout) :-
     (  is_dict(Prev),
        get_dict(constraints, Prev, PrevConstraints),
        PrevConstraints == Constraints,
-       subtree_clean(Path, Dirty)
-    -> Layout = Prev
+       subtree_layout_clean(Path, Dirty)
+    -> (  subtree_paint_clean(Path, Dirty)
+       -> Layout = Prev
+       ;  recolor_node_(Dirty, Node, Prev, Layout)  )
     ;  get_dict(text, Node, _)
     -> inline_options_(attrs{}, Options),
        inline_layout(Dirty, Path, Node, Options, Constraints, none, Layout)
     ;  block_layout(Dirty, Path, Node, Constraints, Prev, Layout)
     ).
+
+% --- Recolor --- %
+%
+%  A paint-only change (see changes_dirty/2) rewrites the glyph-run colors of the
+%  affected inlines while reusing every measured geometry: no text is re-shaped
+%  and no box is re-placed. The traversal walks the previous layout tree next to
+%  the current state node (paired positionally by flow index, which is sound
+%  because any structural change is layout-dirty, never merely paint-dirty).
+
+%! recolor_node_(+Dirty, +Node, +Prev, -Layout) is det.
+
+recolor_node_(Dirty, Node, Prev, Layout) :-
+    (  get_dict(glyphs, Prev, _)
+    -> recolor_inline_(Node, Prev, Layout)
+    ;  get_dict(children, Prev, PrevChildren)
+    -> get_dict(children, Node, NodeChildren),
+       recolor_child_list_(Dirty, NodeChildren, 0, PrevChildren, NewChildren),
+       put_dict(children, Prev, NewChildren, Layout)
+    ;  Layout = Prev
+    ).
+
+recolor_child_list_(_, _, _, [], []).
+recolor_child_list_(Dirty, NodeChildren, Idx, [child(X, Y, PrevChild)|Ps],
+                    [child(X, Y, NewChild)|Ns]) :-
+    nth0(Idx, NodeChildren, ChildNode),
+    get_dict(path, PrevChild, ChildPath),
+    (  subtree_paint_clean(ChildPath, Dirty)
+    -> NewChild = PrevChild
+    ;  recolor_node_(Dirty, ChildNode, PrevChild, NewChild)
+    ),
+    Idx1 is Idx + 1,
+    recolor_child_list_(Dirty, NodeChildren, Idx1, Ps, Ns).
+
+%! recolor_inline_(+Node, +Prev, -Layout) is det.
+%
+%  Re-derives the inline's source runs (cheap: no shaping) to read the current
+%  inherited colors, then substitutes each glyph run's color by mapping the run's
+%  byte offset (from its glyphs) onto the source runs. Returns Prev unchanged
+%  when no color actually differs, so an unaffected inline emits no paint change.
+
+recolor_inline_(Node, Prev, Layout) :-
+    inline_node_runs_(Node, [], Runs, []),
+    run_color_ranges_(Runs, 0, Ranges),
+    get_dict(glyphs, Prev, Lines0),
+    recolor_lines_(Lines0, Ranges, Lines),
+    (  Lines == Lines0
+    -> Layout = Prev
+    ;  put_dict(glyphs, Prev, Lines, Layout)
+    ).
+
+%! run_color_ranges_(+Runs, +Offset, -Ranges) is det.
+%
+%  Ranges = [range(Start, End, Color), ...] over the run-concatenated text (byte
+%  offsets, matching the measurer). Boxes contribute no text, so they do not
+%  advance the offset; a run with no color attribute yields the atom `none`.
+
+run_color_ranges_([], _, []).
+run_color_ranges_([run(Text, Inherited)|Rest], Off, [range(Off, End, Color)|Ranges]) :- !,
+    string_bytes(Text, Bytes, utf8),
+    length(Bytes, Len),
+    End is Off + Len,
+    (  get_dict(color, Inherited, [Color0])
+    -> Color = Color0
+    ;  Color = none
+    ),
+    run_color_ranges_(Rest, End, Ranges).
+run_color_ranges_([box(_, _, _)|Rest], Off, Ranges) :-
+    run_color_ranges_(Rest, Off, Ranges).
+
+%! recolor_lines_(+Lines, +Ranges, -Recolored) is det.
+
+recolor_lines_([], _, []).
+recolor_lines_([line(B, A, D, Items0)|Ls0], Ranges, [line(B, A, D, Items)|Ls]) :-
+    recolor_items_(Items0, Ranges, Items),
+    recolor_lines_(Ls0, Ranges, Ls).
+
+recolor_items_([], _, []).
+recolor_items_([glyph_run(Font, Size, _, Synth, Glyphs)|Is0], Ranges,
+               [glyph_run(Font, Size, Color, Synth, Glyphs)|Is]) :- !,
+    run_glyphs_color_(Glyphs, Ranges, Color),
+    recolor_items_(Is0, Ranges, Is).
+recolor_items_([Item|Is0], Ranges, [Item|Is]) :-
+    recolor_items_(Is0, Ranges, Is).
+
+%! run_glyphs_color_(+Glyphs, +Ranges, -Color) is det.
+%
+%  A glyph run lies wholly within one source run; its first glyph's start byte
+%  selects the run (and thus the color). Falls back to `none` when the run has no
+%  glyphs or no range matches.
+
+run_glyphs_color_([glyph(_, _, _, _, Start, _)|_], Ranges, Color) :- !,
+    (  member(range(RS, RE, C), Ranges), Start >= RS, Start < RE
+    -> Color = C
+    ;  Color = none
+    ).
+run_glyphs_color_(_, _, none).
 
 %! block_layout(+Dirty, +Path, +Node, +Constraints, +Prev, -Layout) is det.
 
@@ -350,7 +467,7 @@ cross_offset_(end, Room, Extent, CrossLead, Offset) :-
 %! inline_layout(+Dirty, +Path, +Node, +Options, +Constraints, +Prev, -Layout) is det.
 %
 %  Lays out one inline node (a text node or a display(inline) element at
-%  Path) by measuring its content through ui_layout_text:
+%  Path) by measuring its content through ui_native:
 %
 %    measure_text(Runs, Options, MaxW, metrics(W, H, Glyphs))
 %    Runs    ::= [ run(Text, InheritedAttrs)  % text node
@@ -363,7 +480,7 @@ cross_offset_(end, Room, Extent, CrossLead, Offset) :-
 %  whole units (so measured content never overflows its box) and clamped into
 %  Constraints, so a tight main axis (a tight flex share) forces the inline's
 %  box regardless of its content. Glyphs is the per-glyph layout (lines, glyph
-%  runs, positioned glyphs; see ui_layout_text), stored verbatim under the
+%  runs, positioned glyphs; see ui_native), stored verbatim under the
 %  layout's glyphs key for a later paint pass.
 
 inline_layout(Dirty, Path, Node, Options, Constraints, Prev, Layout) :-
@@ -372,8 +489,10 @@ inline_layout(Dirty, Path, Node, Options, Constraints, Prev, Layout) :-
        Constraints0 == Constraints,
        get_dict(options, Prev, Options0),
        Options0 == Options,
-       subtree_clean(Path, Dirty)
-    -> Layout = Prev
+       subtree_layout_clean(Path, Dirty)
+    -> (  subtree_paint_clean(Path, Dirty)
+       -> Layout = Prev
+       ;  recolor_inline_(Node, Prev, Layout)  )
     ;  Constraints = constraints(MinW, MaxW, MinH, MaxH),
        inline_node_runs_(Node, [], Runs, []),
        measure_text(Runs, Options, MaxW, metrics(W0, H0, Glyphs)),
@@ -487,3 +606,114 @@ sides_([Top, Right, Bottom, Left], Top, Right, Bottom, Left).
 
 axis_(row, W, H, W, H).
 axis_(column, W, H, H, W).
+
+% --- Paint Changes --- %
+
+%! layout_changes(+PrevLayout, +NextLayout, -Changes) is det.
+%
+%  Reconciles two layout trees (each a layout node or `none`) into the minimal
+%  paint-change stream that turns the scene painted for PrevLayout into the one
+%  for NextLayout. It is O(changes): relayout_tree/4 shares unchanged subtrees,
+%  so same_term/2 skips them in constant time. Nodes are keyed by their state
+%  path; a node's position lives in its parent's child(X, Y, Layout) entry, so
+%  moves are detected at the parent and content changes by recursion.
+%
+%    Change ::= paint_put(Path, X, Y, W, H, Draw)   % (re)create: transform + size + content
+%             | paint_move(Path, X, Y)              % position-only (subtree unchanged)
+%             | paint_drop(Path)                     % remove node + subtree
+%    Draw   ::= glyphs(Lines) | none
+%
+%  The initial paint is layout_changes(none, Layout, Changes).
+
+layout_changes(Prev, Next, Changes) :-
+    phrase(node_changes_(0, 0, Prev, 0, 0, Next), Changes).
+
+%! node_changes_(+PX, +PY, +Prev, +NX, +NY, +Next)// is det.
+%
+%  (PX, PY, Prev) is the node's previous position and layout, (NX, NY, Next) its
+%  next; positions are supplied by the parent.
+
+node_changes_(PX, PY, Prev, NX, NY, Next) -->
+    (  { same_term(Prev, Next) }
+    -> (  { PX == NX, PY == NY }
+       -> []
+       ;  { get_dict(path, Next, Path) },
+          [ paint_move(Path, NX, NY) ]  )
+    ;  { Next == none }
+    -> { get_dict(path, Prev, Path) },
+       [ paint_drop(Path) ]
+    ;  { Prev == none }
+    -> put_subtree_(NX, NY, Next)
+    ;  node_put_(PX, PY, Prev, NX, NY, Next),
+       children_changes_(Prev, Next)
+    ).
+
+%! node_put_(+PX, +PY, +Prev, +NX, +NY, +Next)// is det.
+%
+%  Emits paint_put only when the node's own transform or content changed; a
+%  difference confined to its children is handled by recursion.
+
+node_put_(PX, PY, Prev, NX, NY, Next) -->
+    { node_paint_(Prev, PW, PH, PDraw),
+      node_paint_(Next, NW, NH, NDraw) },
+    (  { PX == NX, PY == NY, PW == NW, PH == NH, PDraw == NDraw }
+    -> []
+    ;  { get_dict(path, Next, Path) },
+       [ paint_put(Path, NX, NY, NW, NH, NDraw) ]
+    ).
+
+%! put_subtree_(+X, +Y, +Layout)// is det.
+%
+%  Emits paint_put for a wholly new node and, recursively, its children.
+
+put_subtree_(X, Y, Layout) -->
+    { node_paint_(Layout, W, H, Draw),
+      get_dict(path, Layout, Path) },
+    [ paint_put(Path, X, Y, W, H, Draw) ],
+    put_children_(Layout).
+
+put_children_(Layout) -->
+    { get_dict(children, Layout, Children) }, !,
+    put_child_list_(Children).
+put_children_(_) --> [].
+
+put_child_list_([]) --> [].
+put_child_list_([child(X, Y, L)|Cs]) -->
+    put_subtree_(X, Y, L),
+    put_child_list_(Cs).
+
+%! node_paint_(+Layout, -W, -H, -Draw) is det.
+
+node_paint_(Layout, W, H, Draw) :-
+    get_dict(width, Layout, W),
+    get_dict(height, Layout, H),
+    (  get_dict(glyphs, Layout, Glyphs)
+    -> Draw = glyphs(Glyphs)
+    ;  Draw = none
+    ).
+
+%! children_changes_(+Prev, +Next)// is det.
+
+children_changes_(Prev, Next) -->
+    { layout_children_(Prev, PrevChildren),
+      layout_children_(Next, NextChildren) },
+    child_pairs_(PrevChildren, NextChildren).
+
+layout_children_(Layout, Children) :-
+    ( get_dict(children, Layout, Children) -> true ; Children = [] ).
+
+%! child_pairs_(+PrevChildren, +NextChildren)// is det.
+%
+%  Children are matched positionally; a shorter/longer list yields drops/puts.
+
+child_pairs_([], []) --> [].
+child_pairs_([child(PX, PY, PL)|Ps], [child(NX, NY, NL)|Ns]) --> !,
+    node_changes_(PX, PY, PL, NX, NY, NL),
+    child_pairs_(Ps, Ns).
+child_pairs_([], [child(NX, NY, NL)|Ns]) --> !,
+    put_subtree_(NX, NY, NL),
+    child_pairs_([], Ns).
+child_pairs_([child(_, _, PL)|Ps], []) -->
+    { get_dict(path, PL, Path) },
+    [ paint_drop(Path) ],
+    child_pairs_(Ps, []).

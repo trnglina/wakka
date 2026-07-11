@@ -4,12 +4,13 @@
 :- use_module(library(plunit)).
 :- use_module(ui_changes).
 :- use_module(ui_layout).
-:- use_module(ui_layout_text).
+:- use_module(ui_native).
 :- use_module(ui_state).
 
-%  ui_layout now measures inline content by calling ui_layout_text directly, so
-%  the whole suite drives the real Parley measurer across the foreign boundary
-%  and requires the native library: run `cargo build -p layout_text` first.
+%  ui_layout measures inline content by calling ui_native (measure_text/4)
+%  directly, so the whole suite drives the real Parley measurer across the
+%  foreign boundary and requires the native library: run `cargo build -p native`
+%  first.
 %  Because metrics depend on the host's fonts, tests over text assert structural
 %  or relational properties rather than exact pixels; tests whose geometry is
 %  fixed by the engine (flex shares, stretch, axis_alignment of fixed-size boxes)
@@ -418,15 +419,36 @@ test('an identical relayout reuses the whole tree') :-
     relayout_tree([], Root, L0, L1),
     same_term(L0, L1).
 
-test('a non-layout attribute change reuses the whole tree') :-
+test('a purely presentational attribute change reuses the whole tree') :-
     build(div([], [div([main_size(10), cross_size(10)], [])]), Node0),
-    Changes = [set_attribute([0], color, [red])],
+    Changes = [set_attribute([0], opacity, [0.5])],
     node_apply_changes(Changes, Node0, Node1),
     root(100, 100, Node0, Root0),
     layout_tree(Root0, L0),
     root(100, 100, Node1, Root1),
     relayout_tree(Changes, Root1, L0, L1),
     same_term(L0, L1).
+
+test('a color change recolors the text in place without re-shaping') :-
+    build(div([font_size(16), color(blue)], ["hi"]), Node0),
+    root(100, 100, Node0, Root0),
+    layout_tree(Root0, L0),
+    get_dict(children, L0, [child(_, _, P0)]),
+    get_dict(width, P0, W), get_dict(height, P0, H),
+    get_dict(glyphs, P0, G0),
+    once((member(line(_, _, _, Its0), G0), member(glyph_run(_, _, C0, _, Glyphs0), Its0))),
+    C0 == blue,
+    Changes = [set_attribute([], color, [red])],
+    node_apply_changes(Changes, Node0, Node1),
+    root(100, 100, Node1, Root1),
+    relayout_tree(Changes, Root1, L0, L1),
+    get_dict(children, L1, [child(_, _, P1)]),
+    \+ same_term(P0, P1),
+    get_dict(width, P1, W), get_dict(height, P1, H),
+    get_dict(glyphs, P1, G1),
+    once((member(line(_, _, _, Its1), G1), member(glyph_run(_, _, C1, _, Glyphs1), Its1))),
+    C1 == red,
+    Glyphs1 == Glyphs0.
 
 test('a viewport change reuses unaffected children') :-
     build(div([], [div([main_size(10), cross_size(10)], [])]), Node),
@@ -736,3 +758,72 @@ test('glyphs flow into the stored layout node') :-
     first_glyph_run(Lines, glyph_run(_, _, _, _, [_|_])).
 
 :- end_tests(glyph_layout).
+
+:- begin_tests(layout_changes).
+
+test('an initial paint puts every node') :-
+    lay(div([cross_axis(start)], [div([main_size(10), cross_size(10)], [])]), 100-100, L),
+    layout_changes(none, L, Cs),
+    memberchk(paint_put([], _, _, _, _, _), Cs),
+    memberchk(paint_put([0], _, _, _, _, _), Cs),
+    \+ memberchk(paint_move(_, _, _), Cs),
+    \+ memberchk(paint_drop(_), Cs).
+
+test('an identical relayout yields no changes') :-
+    build(div([], [div([main_size(10), cross_size(10)], [])]), Node),
+    root(100, 100, Node, Root),
+    layout_tree(Root, L0),
+    relayout_tree([], Root, L0, L1),
+    layout_changes(L0, L1, Cs),
+    Cs == [].
+
+test('a moved but otherwise unchanged child yields a paint_move') :-
+    build(div([direction(row), cross_axis(start)],
+              [div([main_size(40), cross_size(10)], []),
+               div([main_size(30), cross_size(10)], [])]),
+          Node0),
+    root(100, 100, Node0, Root0),
+    layout_tree(Root0, L0),
+    Changes = [set_attribute([0], main_size, [60])],
+    node_apply_changes(Changes, Node0, Node1),
+    root(100, 100, Node1, Root1),
+    relayout_tree(Changes, Root1, L0, L1),
+    layout_changes(L0, L1, Cs),
+    memberchk(paint_put([0], _, _, _, _, _), Cs),
+    u(60, X60),
+    memberchk(paint_move([1], X60, _), Cs),
+    \+ memberchk(paint_put([1], _, _, _, _, _), Cs).
+
+test('a removed child yields a paint_drop') :-
+    build(div([cross_axis(start)],
+              [div([main_size(10), cross_size(10)], []),
+               div([main_size(10), cross_size(10)], [])]),
+          Node0),
+    root(100, 100, Node0, Root0),
+    layout_tree(Root0, L0),
+    Changes = [detach_child([1], gone)],
+    node_apply_changes(Changes, Node0, Node1),
+    root(100, 100, Node1, Root1),
+    relayout_tree(Changes, Root1, L0, L1),
+    layout_changes(L0, L1, Cs),
+    memberchk(paint_drop([1]), Cs),
+    \+ memberchk(paint_drop([0]), Cs).
+
+test('a color change repaints only the recolored inline') :-
+    build(div([cross_axis(start)],
+              [div([font_size(16), color(blue)], ["hi"]),
+               div([main_size(10), cross_size(10)], [])]),
+          Node0),
+    root(100, 100, Node0, Root0),
+    layout_tree(Root0, L0),
+    Changes = [set_attribute([0], color, [red])],
+    node_apply_changes(Changes, Node0, Node1),
+    root(100, 100, Node1, Root1),
+    relayout_tree(Changes, Root1, L0, L1),
+    layout_changes(L0, L1, Cs),
+    memberchk(paint_put([0, 0], _, _, _, _, glyphs(_)), Cs),
+    \+ ( member(paint_put(P, _, _, _, _, _), Cs), P \== [0, 0] ),
+    \+ memberchk(paint_move(_, _, _), Cs),
+    \+ memberchk(paint_drop(_), Cs).
+
+:- end_tests(layout_changes).

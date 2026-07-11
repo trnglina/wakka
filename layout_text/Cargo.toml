@@ -3,10 +3,6 @@ name = "layout_text"
 version = "0.1.0"
 edition.workspace = true
 
-[lib]
-crate-type = ["cdylib"]
-
 [dependencies]
 parley = { version = "0.11.0", features = ["complex-scripts"] }
 skrifa = "0.43"
-swi_fli = { version = "0.1.0", path = "../swi_fli" }
