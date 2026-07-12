@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["swi_fli"]
+members = ["swi_fli", "native"]
 
 [workspace.package]
 edition = "2024"
